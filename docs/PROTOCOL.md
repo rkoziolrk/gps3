@@ -76,11 +76,12 @@ Po przetworzeniu: `SMS IS CLEAR`. Brak wiadomości: `[Brak SMS]`.
 ## Odpowiedź `CONFIG` — format stałopozycyjny
 
 Serwer odsyła konfigurację jako napis, w którym każdy parametr siedzi pod
-**stałym offsetem znakowym** o znanej szerokości (nie ma separatorów). Firmware
-wycina pola funkcją `get_field(src, off, width)` (@0xb7ee) i konwertuje `atoi`
-(@0xb714). Odtworzona mapa (funkcja parsera @0x33b6):
+**stałej pozycji znakowej** o znanej szerokości (nie ma separatorów). Firmware
+wycina pola procedurą `0xb7ee`, która działa jak BASIC-owe `Mid(s, poz, dł)`,
+a więc **pozycje liczone są od 1**. Wartości zamienia `Val()` (@0xb714).
+Odtworzona mapa (funkcja parsera @0x33b6):
 
-| # | offset | szer. | RAM     | uwagi                                   |
+| # | poz. (od 1) | szer. | RAM     | uwagi                              |
 |---|--------|-------|---------|-----------------------------------------|
 | 0 | 6      | 5     | 0x0242  | wartość 32-bit (interwał/licznik)       |
 | 1 | 12     | 5     | 0x023E  | wartość 32-bit (interwał/licznik)       |

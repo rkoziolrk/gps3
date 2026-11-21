@@ -6,7 +6,9 @@
  *  Plik wejsciowy : flash.bin  (64 KiB, wykorzystane 0x0000..0xC3EE = ~50 KiB)
  *  MCU            : Atmel ATmega64  (avr5)
  *  F_CPU          : 8 000 000 Hz   (potwierdzone: UBRR=51 @ 9600 baud oraz "AT+IPR=9600")
- *  Toolchain      : avr-gcc + avr-libc  (rozpoznane po rutynach runtime)
+ *  Oryginal       : BASCOM-AVR (BASIC, MCS Electronics) — rozpoznany po kodzie
+ *                   startowym, ramce R4:R5, rejestrze flag R6 i bibliotece
+ *                   (patrz docs/COMPILER.md). Ta rekonstrukcja: C dla avr-gcc.
  *  Peryferia      : GPS  GlobalTop PA6C  (NMEA, PMTK)
  *                   GSM  SIMCom SIM900   (GPRS, AT)
  *                   CAN  (czujnik paliwa / RPM / pedal)
@@ -25,8 +27,8 @@
  *  Poziomy pewnosci uzyte w pliku:
  *    [HW]   - inicjalizacja sprzetu: zdekodowana DOKLADNIE z zapisow do rejestrow
  *             (adresy 0x8c..0x1d4 obrazu). Wartosci rejestrow sa pewne.
- *    [LIB]  - funkcje biblioteczne avr-libc/libgcc rozpoznane po sygnaturze kodu
- *             i podstawione gotowym odpowiednikiem (strcpy, itoa, _delay_ms, ...).
+ *    [LIB]  - procedury biblioteki BASCOM-AVR rozpoznane po dzialaniu i zastapione
+ *             odpowiednikami z avr-libc (strcpy, itoa, _delay_ms, ...).
  *    [REC]  - logika aplikacji odtworzona z disassemblera + tablicy stringow
  *             + grafu wywolan. Struktura i przeplyw wierne; drobne szczegoly
  *             (np. dokladne progi, kolejnosc pol) moga sie roznic.
@@ -49,28 +51,43 @@
 #include <stdlib.h>
 
 /* ========================================================================== */
-/*  [LIB]  Rutyny runtime rozpoznane w obrazie (avr-libc / libgcc)            */
+/*  [LIB]  Biblioteka BASCOM-AVR w obrazie i jej odpowiedniki w C             */
 /* ========================================================================== */
 /*
- *  Najczesciej wolane adresy w obrazie to standardowa biblioteka — NIE sa to
- *  funkcje autora firmware, dlatego uzywamy gotowych odpowiednikow:
+ *  Najczesciej wolane adresy to procedury biblioteki BASCOM-AVR. W rekonstrukcji
+ *  zastepujemy je odpowiednikami z avr-libc:
  *
- *   @0xaeac (352x)  st X+,(lpm Z+) do NUL     ->  strcpy_P(dst, PSTR(...))
- *   @0xb7d8 (186x)  st X+,(ld Z+)  do NUL     ->  strcpy(dst, src)
- *   @0xb85a (122x)  porownanie z flagą T      ->  strcmp() / strcmp_P()
- *   @0xaae6 (287x)  skan do NUL, cofniecie    ->  (wew. pomocnik strcat/strlen)
- *   @0xb672         itoa ze znakiem           ->  itoa()/ltoa()
- *   @0xb680         itoa bez znaku            ->  utoa()/ultoa()
- *   @0xb714         akumulacja cyfr '0'..'9'  ->  atoi()/strtol()
- *   @0xab22         putchar w petli (flash)   ->  lcd_puts_P()  (trace)
- *   @0xab16/0xab12  putchar w petli (RAM)     ->  lcd_puts()    (trace)
- *   @0xac0c         putchar na UART0          ->  lcd_putc()
- *   @0xac72         petla zwloki ~2000/ms     ->  _delay_ms()
- *   @0xae98         mul r20*r16...            ->  __mulhi3 (libgcc)
- *   @0xb25c         lpm przez Z               ->  __lpm    (libgcc)
- *   @0xae84/0xa9ea  st -Y / sub r4            ->  prolog/epilog ramki (libgcc)
+ *   adres    BASCOM (z dzialania)          odpowiednik w C
+ *   -------  ----------------------------  ------------------------------------
+ *   0xaeac   s = "stala"  (kopia z flash)  strcpy_P(dst, PSTR(...))
+ *   0xb7d8   s = t        (kopia w RAM)    strcpy(dst, src)
+ *   0xaae6   s = s + ...  (koniec napisu)  strcat (pomocnik)
+ *   0xb85a/e If s = "..." / If s = t       strcmp_P() / strcmp()
+ *   0xb84e   Len(s)                        strlen()
+ *   0xb7ee   Mid(s, poz, dl)  (poz od 1!)  get_field()
+ *   0xb882   Instr(...)                    strstr()/strchr()
+ *   0xb714   Val(s)  -> Long w R16..R19    atoi()/strtol()
+ *   0xb672/0 Str(x)  (ze znakiem/bez)      itoa()/utoa()
+ *   0xb4a4   Format(s, "000")              dopelnianie zerami
+ *   0xaa14   Incr x  (Word)                x++
+ *   0xac72   Waitms n                      _delay_ms()
+ *   0xab6a   Wait n  (sekundy)             _delay_ms(1000) w petli
+ *   0xab5a   Cls     (LCD 0x01, 0x80)      lcd_clear_home()
+ *   0xab40   Lowerline (LCD 0xC0)          lcd_cmd(0xC0)
+ *   0xab22   Lcd "stala"                   lcd_puts_P()
+ *   0xab16   Lcd s                         lcd_puts()
+ *   0xac0c   (bajt na LCD, 4-bit)          lcd_putc()
+ *   0xab7c   inicjalizacja LCD (w starcie) lcd_init
+ *   0xb9c6/e4 I2cstart / I2cstop           (programowe I2C PD0/PD1)
+ *   0xb9f6   I2cwbyte                      (j.w.)
+ *   0xba30   I2crbyte                      (j.w.)
+ *   0xb81e   zapis EEPROM (gdy r23=0x7B)   eeprom_update_byte()
+ *   0xb840   odczyt EEPROM                 eeprom_read_byte()
+ *   0xae98   mnozenie 16-bit               operator *
+ *   0xb25c   odczyt bajtu z flash (lpm)    pgm_read_byte()
+ *   0xae84/0xae90/0xa9ea  ramka R4:R5      (zmienne tymczasowe; w C — stos)
  *
- *  Ponizsze deklaracje odwzorowuja faktyczne porty debugowe uzyte przez firmware.
+ *  Nazwy BASCOM sa przypisane po dzialaniu procedur; obraz nie zawiera nazw.
  */
 
 /* ========================================================================== */
@@ -995,7 +1012,10 @@ static uint8_t server_handshake(void)
  * Kopiowanie konczy sie na NUL lub po 'width' znakach. */
 static void get_field(const char *src, uint8_t off, uint8_t width, char *dst)
 {
-    while (off && *src) { src++; off--; }      /* przewin do offsetu          */
+    /* Jak BASIC-owe Mid(): pozycja liczona OD 1 (@0xb7ee: czyta 'off' znakow,
+     * potem cofa wskaznik o 1), wiec pierwszy kopiowany znak to src[off-1].   */
+    if (off) off--;
+    while (off && *src) { src++; off--; }      /* przewin do pozycji          */
     while (width && *src) { *dst++ = *src++; width--; }
     *dst = '\0';
 }

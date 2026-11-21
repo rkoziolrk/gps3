@@ -1,5 +1,5 @@
 # Makefile — lokalizator GPS (ATmega64)
-# Toolchain rozpoznany w oryginalnym firmware: avr-gcc + avr-libc.
+# Oryginal skompilowano w BASCOM-AVR; ta rekonstrukcja w C buduje sie avr-gcc.
 #
 #   make            # kompilacja -> build/tracker.elf + build/tracker.hex
 #   make size       # rozmiar sekcji

@@ -10,7 +10,7 @@ i z procedur obsługi przerwań.
 | 0x0000..0x008B    | tablica wektorów przerwań                   |
 | 0x008C            | reset / start (crt0 + `main`)               |
 | ~0x0100..0x7800   | kod aplikacji                               |
-| ~0xA300..0xC3EE   | runtime avr-libc/libgcc + tablica stringów  |
+| ~0xA300..0xC3EE   | biblioteka BASCOM-AVR + tablica stringów    |
 | 0xC3EE..0xFFFF    | puste (0xFF)                                |
 
 Wykorzystane: 0x0000..0xC3EE (~50 KiB z 64 KiB).
@@ -55,22 +55,21 @@ Pozostałe wektory → `reti` (nieużywane).
 | 0x0B39  | bufor bieżącej linii NMEA/AT                          |
 | 0x0C46  | bufor roboczy do składania/wypisywania napisów       |
 
-## Rozpoznane rutyny biblioteczne (avr-libc / libgcc)
+## Biblioteka wykonawcza
 
-| Adres   | Wywołań | Odpowiednik          |
-|---------|---------|----------------------|
-| 0xAEAC  | 352     | `strcpy_P`           |
-| 0xB7D8  | 186     | `strcpy`             |
-| 0xB85A  | 122     | `strcmp` / `strcmp_P`|
-| 0xB672  | —       | `itoa` / `ltoa`      |
-| 0xB680  | —       | `utoa` / `ultoa`     |
-| 0xB714  | —       | `atoi` / `strtol`    |
-| 0xAB22  | 140     | `uart0_puts_P`       |
-| 0xAB16  | —       | `uart0_puts`         |
-| 0xAC0C  | —       | `uart0_putc`         |
-| 0xAC72  | 71      | `_delay_ms`          |
-| 0xAE98  | 32      | `__mulhi3` (libgcc)  |
-| 0xB25C  | —       | `__lpm` (libgcc)     |
+Oryginał skompilowano w **BASCOM-AVR** (patrz `docs/COMPILER.md`). Pełne
+zestawienie procedur biblioteki i ich odpowiedników w C jest w nagłówku
+`src/tracker.c` (sekcja `[LIB]`). Najczęściej wołane:
+
+| Adres   | Wywołań | BASCOM                 | w rekonstrukcji |
+|---------|---------|------------------------|-----------------|
+| 0xAEAC  | 352     | przypisanie stałej     | `strcpy_P`      |
+| 0xAAE6  | 287     | konkatenacja           | `strcat`        |
+| 0xB7D8  | 186     | przypisanie napisu     | `strcpy`        |
+| 0xAB22  | 140     | `Lcd "stała"`          | `lcd_puts_P`    |
+| 0xB85A  | 122     | porównanie napisów     | `strcmp_P`      |
+| 0xAC72  | 71      | `Waitms`               | `_delay_ms`     |
+| 0xAB5A  | 57      | `Cls`                  | `lcd_clear_home`|
 
 ## Funkcje EEPROM (poprawka)
 
