@@ -84,7 +84,8 @@ ograniczenie przy 50) i w tym czasie czyta SMS. Kopia także w pamięci I2C.
 `000001` = jeden restart od ostatniej udanej łączności.
 
 **Tryb roamingu (0x64).** Jedna cyfra `0..7`, inaczej domyślne `3`. Ustawiany
-z odpowiedzi `CONFIG` (`RoamingPam=<n>`, `@0x37e4`), raportowany w ramce
+z pozycji 25 odpowiedzi `CONFIG` przy zgodnej sumie kontrolnej
+(`RoamingPam=<n>`, `@0x37e4`), raportowany w ramce
 `FORM` po `R=3/`. Określa, w których krajach urządzenie może pracować i jak
 wymusza operatora: 0 = zakaz roamingu, 1 = UE/EOG/UK + Szwajcaria,
 2 = jak 1 + pozostała Europa, 3–7 = tylko UE/EOG/UK z różnymi strategiami

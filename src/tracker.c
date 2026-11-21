@@ -1123,39 +1123,40 @@ static uint8_t server_handshake(void)
  *         funkcja @0x33b6 ; string "CONFIG;" @0x342a (flash 0xbd9c)          *
  * ========================================================================== *
  *
- *  Odpowiedz serwera na ramke CONFIG ma format STALOPOZYCYJNY: kazdy parametr
- *  siedzi pod znanym offsetem znakowym i ma znana szerokosc. Firmware NIE dzieli
- *  jej po separatorze — wycina pod-napisy funkcja get_field() (@0xb7ee), ktora
- *  kopiuje 'width' znakow poczawszy od 'off', a nastepnie atoi() (@0xb714).
+ *  Odpowiedz ma format STALOPOZYCYJNY: parametr pod stala pozycja (liczona
+ *  OD 1) i o stalej szerokosci. Pola wycina get_field() (@0xb7ee), liczby
+ *  zamienia atoi() (@0xb714). Mapa 1:1 z obrazu:
  *
- *  Mapa pol odtworzona 1:1 z obrazu (offset, szerokosc, adres RAM docelowy):
+ *    poz  w   cel       uwagi
+ *    ---  --  --------  ----------------------------------------------------
+ *      6   5  0x0242    liczba 32-bit
+ *     12   5  0x023E    liczba 32-bit
+ *     18   1  0x0257    licznik cykli do raportu; 0 -> 6 (@0x34c2)
+ *     20   1  0x0B5E
+ *     22   2  0x0268
+ *     25   1  (lokalna) TRYB ROAMINGU -> EEPROM 0x64 (gdy suma kontrolna OK)
+ *     27   2  0x0B63    dodatkowo przeskalowany mnozeniem (@0x356e)
+ *     30   1  0x0C17
+ *     32   4  0x0BEB    tekst; "0000" -> pusty napis. Uzycie nieustalone
+ *     37   3  0x025B
+ *     41   2  0x025C
+ *     44   2  0x0B76
+ *     47   1  0x0B77
+ *     49   2  0x025E
+ *     52   1  0x0C14
+ *     54   3  0x0C15
+ *     59   1  0x0269
+ *     60   1  0x0B86
+ *     61   1  0x0B87
+ *     62   1  0x0C22
+ *     63   1  0x0C23
+ *     64   1  0x0C24
+ *     79   3  (lokalna) SUMA KONTROLNA: XOR znakow na pozycjach 1..77
  *
- *    f#  off  w   RAM      uwagi
- *    --  ---  --  ------   -------------------------------------------------
- *     0    6   5  0x0242   wartosc 32-bit (interwal/licznik)
- *     1   12   5  0x023E   wartosc 32-bit (interwal/licznik)
- *     2   18   1  0x0257   gdy ==0 -> default 6   (@0x34c2)
- *     3   20   1  0x0B5E
- *     4   22   2  0x0268
- *     5   25   1  0x0268+  (drugi parametr w tym samym rejonie)
- *     6   27   2  0x0B63   dodatkowo skalowany przez __mulhi3 (@0x356e)
- *     7   30   1  0x0C17
- *     -   33   -  flaga: strcmp(pole, ";05") @0x35b4 (0xbda4)
- *     8   37   3  0x025B
- *     9   41   2  0x025C
- *    10   44   2  0x0B76
- *    11   47   1  0x0B77
- *    12   49   2  0x025E
- *    13   52   1  0x0C14
- *    14   54   3  0x0C15
- *    15   59   1  0x0269
- *    16   60   1  0x0B86
- *    17   61   1  0x0B87
- *    18   62   1  0x0C22
- *    19   63   1  0x0C23
- *
- *  (Nazwy semantyczne wiekszosci pol nie sa znane z samego obrazu — zachowano
- *   adresy RAM jako zrodlo prawdy; role wpisano tam, gdzie wynikaja z uzycia.)
+ *  Sprawdzenie sumy (@0x37aa..0x37ca): Mid(odp,1,77) -> XOR (@0xb498)
+ *  == liczba z pozycji 79..81 ?  tak: zapisz tryb roamingu do EEPROM i
+ *  wypisz "RoamingPam=<n>" (@0x3806); nie: "-CONFIG-ERROR <xor>" i restart
+ *  z kodem 14 (@0x38ba). Pozostale pola trafiaja do RAM przed sprawdzeniem.
  */
 
 /* [LIB-like] @0xb7ee — wytnij 'width' znakow od offsetu 'off' z 'src' do 'dst'.
@@ -1179,39 +1180,37 @@ static struct {
                            *   odczyt-dekrementacja-zapis @0x477c/0x4786,
                            *   porownywany @0x11da/0x2bd2 -> wyzwala raport.    */
     uint8_t  p_b5e;       /* 0x0B5E */
-    uint16_t p268a;       /* 0x0268 */
-    uint8_t  p268b;       /* 0x0268+ */
+    uint8_t  p268;        /* 0x0268 */
     uint16_t p_b63;       /* 0x0B63  (skalowany) */
     uint8_t  p_c17;       /* 0x0C17 */
-    uint8_t  flag05;      /* pole porownane z ";05" */
+    char     text_beb[5]; /* 0x0BEB  pole tekstowe z pozycji 32..35          */
     uint16_t p25b, p25c, p_b76, p25e, p_c15;
-    uint8_t  p_b77, p_c14, p269, p_b86, p_b87, p_c22, p_c23;
+    uint8_t  p_b77, p_c14, p269, p_b86, p_b87, p_c22, p_c23, p_c24;
 } cfg;
 
-static char cfg_resp[64];     /* bufor odpowiedzi serwera (@0x01A7)           */
+static char cfg_resp[96];     /* bufor odpowiedzi serwera (@0x01A7)           */
 
 static void server_get_config(void)
 {
-    /* zadanie CONFIG wysyla warstwa nadrzedna; tu parsujemy odebrana linie.   */
-    sim900_tcp_send("CONFIG;");          /* @0xbd9c                             */
-
-    /* (payload odpowiedzi trafia do cfg_resp[] — @0x3f8e w obrazie)           */
     char f[8];
     const char *r = cfg_resp;
+    uint8_t roam, sum;
+
+    sim900_tcp_send("CONFIG;");          /* @0xbd9c                             */
+    /* (odpowiedz trafia do cfg_resp[] — @0x3f8e w obrazie)                    */
 
     get_field(r,  6, 5, f); cfg.t0    = strtoul(f, NULL, 10);   /* 0x0242 */
     get_field(r, 12, 5, f); cfg.t1    = strtoul(f, NULL, 10);   /* 0x023E */
     get_field(r, 18, 1, f); cfg.p257  = atoi(f);
-    if (cfg.p257 == 0) cfg.p257 = 6;                            /* @0x34c2 default */
+    if (cfg.p257 == 0) cfg.p257 = 6;                            /* @0x34c2 */
     get_field(r, 20, 1, f); cfg.p_b5e = atoi(f);               /* 0x0B5E */
-    get_field(r, 22, 2, f); cfg.p268a = atoi(f);               /* 0x0268 */
-    get_field(r, 25, 1, f); cfg.p268b = atoi(f);
-    get_field(r, 27, 2, f); cfg.p_b63 = atoi(f);               /* 0x0B63 (+scale) */
+    get_field(r, 22, 2, f); cfg.p268  = atoi(f);               /* 0x0268 */
+    get_field(r, 25, 1, f); roam      = atoi(f);               /* tryb roamingu */
+    get_field(r, 27, 2, f); cfg.p_b63 = atoi(f);               /* 0x0B63 */
     get_field(r, 30, 1, f); cfg.p_c17 = atoi(f);               /* 0x0C17 */
-
-    get_field(r, 33, 2, f);                                    /* flaga ";05" @0x35b4 */
-    cfg.flag05 = (strcmp_P(f, PSTR(";05")) == 0);
-
+    get_field(r, 32, 4, f);                                    /* @0x35a8 */
+    if (strcmp_P(f, PSTR("0000")) == 0) cfg.text_beb[0] = '\0';
+    else strcpy(cfg.text_beb, f);
     get_field(r, 37, 3, f); cfg.p25b  = atoi(f);
     get_field(r, 41, 2, f); cfg.p25c  = atoi(f);
     get_field(r, 44, 2, f); cfg.p_b76 = atoi(f);
@@ -1224,13 +1223,22 @@ static void server_get_config(void)
     get_field(r, 61, 1, f); cfg.p_b87 = atoi(f);
     get_field(r, 62, 1, f); cfg.p_c22 = atoi(f);
     get_field(r, 63, 1, f); cfg.p_c23 = atoi(f);
+    get_field(r, 64, 1, f); cfg.p_c24 = atoi(f);
+    get_field(r, 79, 3, f); sum       = atoi(f);               /* suma kontrolna */
 
-    /* blokada roamingu wynika z konfiguracji ("RoamingPam=" 0xbdae)           */
-    /* Tryb roamingu: obsluga CONFIG zapisuje go pod EEPROM 0x64 i wypisuje
-     * "RoamingPam=<n>" (@0x37e4). Offset pola w odpowiedzi nie jest ustalony,
-     * dlatego tutaj go nie przypisujemy.                                     */
-
-    /* przy bledzie formatu: "-CONFIG-ERROR " (0xbdba); sukces -> zapis EEPROM  */
+    {   char body[78];
+        get_field(r, 1, 77, body);                             /* @0x37aa */
+        if (str_xor(body) == sum) {                            /* @0x37c8 */
+            config_save_roaming_mode(roam);                    /* EEPROM 0x64 */
+            config_load_roaming_mode();                        /* walidacja 0..7 */
+            lcd_puts_P(PSTR("RoamingPam="));
+            utoa(roaming_mode, f, 10);
+            lcd_puts(f);
+        } else {
+            lcd_puts_P(PSTR("-CONFIG-ERROR "));
+            restart_with_reason(14);                           /* @0x38ba */
+        }
+    }
 }
 
 /* ========================================================================== */

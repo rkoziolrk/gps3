@@ -10,8 +10,10 @@ Polska (`KRAJ`), każdy inny = `ZAGRANICA`.
 
 ## Tryb roamingu (EEPROM `0x64`)
 
-Wartości `0..7` to ustawienie samego firmware (z serwera przez `CONFIG`,
-`RoamingPam=`), a nie parametr SIM900. Domyślnie `3`.
+Wartości `0..7` to ustawienie samego firmware, a nie parametr SIM900.
+Przychodzi z serwera na **pozycji 25** odpowiedzi `CONFIG` (1 cyfra) i jest
+zapisywane do EEPROM tylko przy zgodnej sumie kontrolnej odpowiedzi
+(`docs/PROTOCOL.md`). Domyślnie `3`.
 
 | tryb | dozwolone kraje | wybór operatora |
 |------|-----------------|-----------------|
