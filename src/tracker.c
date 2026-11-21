@@ -242,28 +242,62 @@ ISR(USART0_RX_vect)
 }
 
 /* ========================================================================== */
-/*  [REC]  Parser NMEA (PA6C)  — @0x186c (GGA/RMC), @0x1c5e (VTG)              */
+/*  [REC]  Parser NMEA (PA6C)  — @0x186c (RMC/GGA), @0x1c5e (VTG)              */
 /* ========================================================================== */
 /*  Stringi bledow: " - RMC ERROR - " 0xbfaa, " - GGA ERROR - " 0xbfde,
- *                  " - VTG ERROR - " 0xc00a. Pola: UTC/LAT/LON/ALT/SAT/SPEED/
- *                  COURSE/DELTA. RUCH/POSTOJ -> detekcja ruchu.               */
-static uint8_t gps_parse_rmc(const char *s)
+ *                  " - VTG ERROR - " 0xc00a. Pola wypisywane: UTC-/LAT-/LON-/
+ *                  ALT-/SAT-/SPEED-/COURSE-/DELTA-. RUCH/POSTOJ -> detekcja ruchu.
+ *
+ *  W obrazie rozbicie zdania na pola realizuje tokenizer @0x1f66 (separator ','),
+ *  korzystajacy z pomocnika @0xfa6. Ponizej odpowiednik w czytelnym C (strtok
+ *  po przecinku) wypelniajacy strukture 'fix' — wiernie co do zestawu pol.      */
+
+/* Zwraca n-te pole (liczac od 0) zdania NMEA rozdzielanego przecinkami.
+ * Odpowiednik tokenizera @0x1f66. */
+static char *nmea_field(char *s, uint8_t n, char *out)
 {
-    /* $GPRMC,hhmmss,A/V,lat,N,lon,E,speed,course,date,... */
+    uint8_t i = 0;
+    while (n && *s) { if (*s++ == ',') n--; }
+    while (*s && *s != ',' && *s != '*') out[i++] = *s++;
+    out[i] = '\0';
+    return out;
+}
+
+/* $GPRMC,hhmmss.sss,A/V,lat,N,lon,E,speed,course,ddmmyy,... */
+static uint8_t gps_parse_rmc(char *s)
+{
+    char f[12];
     if (strncmp_P(s, PSTR("$GPRMC"), 6) != 0) { uart0_puts_P(PSTR(" - RMC ERROR - ")); return 0; }
-    /* [REC] rozbicie po przecinkach, kopiowanie pol do struktury 'fix' */
-    fix.valid = 0; /* 'A' => 1 */
+
+    nmea_field(s, 2, f);                          /* status A/V                */
+    fix.valid = (f[0] == 'A');
+    if (!fix.valid) return 0;
+
+    nmea_field(s, 1, fix.utc);                    /* UTC-   (hhmmss)           */
+    nmea_field(s, 3, fix.lat);                    /* LAT-                      */
+    nmea_field(s, 5, fix.lon);                    /* LON-                      */
+    nmea_field(s, 7, fix.speed);                  /* SPEED- (wezly)            */
+    nmea_field(s, 8, fix.course);                 /* COURSE-                   */
     return fix.valid;
 }
-static void gps_parse_gga(const char *s)
+
+/* $GPGGA,hhmmss,lat,N,lon,E,fix,sat,hdop,alt,M,... */
+static void gps_parse_gga(char *s)
 {
+    char f[12];
     if (strncmp_P(s, PSTR("$GPGGA"), 6) != 0) { uart0_puts_P(PSTR(" - GGA ERROR - ")); return; }
-    /* [REC] wysokosc (ALT), liczba satelitow (SAT) */
+    nmea_field(s, 7, f);  fix.sats = atoi(f);     /* SAT-                      */
+    nmea_field(s, 9, fix.alt);                    /* ALT-   (m n.p.m.)         */
 }
-static void gps_parse_vtg(const char *s)
+
+/* $GPVTG,course,T,,M,speed_kn,N,speed_kmh,K,... */
+static void gps_parse_vtg(char *s)
 {
     if (strncmp_P(s, PSTR("$GPVTG"), 6) != 0) { uart0_puts_P(PSTR(" - VTG ERROR - ")); return; }
-    /* [REC] predkosc (SPEED), kurs (COURSE) */
+    nmea_field(s, 1, fix.course);                 /* COURSE-                   */
+    nmea_field(s, 7, fix.speed);                  /* SPEED- (km/h)             */
+    /* detekcja RUCH/POSTOJ z progu predkosci -> fix.moving                    */
+    fix.moving = (atoi(fix.speed) > 0);
 }
 
 /* Konfiguracja PA6C: wybor zdan NMEA przez PMTK (@strings 0xbeaa..0xbf4c) */
@@ -414,12 +448,46 @@ static void can_read(void)
  *    "CONFIG;"  pobranie/ustawienie konfiguracji
  *  Pola: ";A=1" aktywny, "CAN=1", "R=3/", "DP=0", "OD=0", "DS=01", "MEM=",
  *        "SD=1 SN=0", "WY=1", "GG=1", "LOGUJ-;", "AUTO--;".                   */
+/*  Budowa ramki FORM — wierna sekwencja z obrazu @0x23cc..0x25e6.
+ *  Kolejnosc sklejania (strcpy_P/strcat + itoa) odtworzona 1:1:            */
 static void build_frame(char *out)
 {
-    strcpy(out, "FORM;");
-    strcat(out, "A=1 ");
-    /* [REC] doklej: pozycja (fix.lat/lon/utc/speed/course/alt/sats),
-     *               CAN (paliwo/rpm), stan ruchu (RUCH/POSTOJ), MEM, itd.      */
+    char num[12];
+
+    strcpy_P(out, PSTR("FORM;"));          /* @0x23d0                        */
+    strcat_P(out, PSTR("Er="));            /* @0x23e0  kod bledu/statusu     */
+    /* strcat(out, err_str);  (RAM 0xbc2a) */
+    strcat_P(out, PSTR(";A=1 "));          /* @0x2400  aktywny               */
+    strcat_P(out, PSTR("CAN=1 "));         /* @0x2410  obecnosc CAN          */
+
+    strcat_P(out, PSTR("R=3/"));           /* @0x2420  licznik rekordu       */
+    ltoa(/*wynik func @0x1dfe*/ 0, num, 10);
+    strcat(out, num);                      /* @0x243e                        */
+    strcat_P(out, PSTR(" "));              /* @0x244e                        */
+
+    strcat_P(out, PSTR("DP=0 "));          /* @0x245e                        */
+    strcat_P(out, PSTR("OD=0 "));          /* @0x246e                        */
+    strcat_P(out, PSTR("DS=01 "));         /* @0x247e                        */
+
+    strcat_P(out, PSTR("MEM="));           /* @0x248e  stan pamieci          */
+    ltoa(0 /*bank*/, num, 10); strcat(out, num);   /* @0x249e               */
+    strcat_P(out, PSTR(":"));              /* @0x24ae                        */
+    ltoa(0 /*adres*/, num, 10); strcat(out, num);  /* @0x24be               */
+    strcat_P(out, PSTR(" "));              /* @0x24ce                        */
+
+    strcat_P(out, PSTR("SD=1 SN=0"));      /* @0x24de                        */
+    strcat_P(out, PSTR("WY=1 "));          /* @0x24ee  flaga wyslania        */
+    strcat_P(out, PSTR("GG=1"));           /* @0x24fe  jakosc GPS            */
+
+    /* czesc danych pozycji/logu (po @0x2588):                               */
+    strcat_P(out, PSTR("LOGUJ-;"));        /* @0x2588                        */
+    /* strcat(out, pozycja_z_bufora);      (RAM 0x0b42 — sparsowane pola GPS)*/
+    strcat_P(out, PSTR(";"));              /* @0x25a8                        */
+    strcat_P(out, PSTR("@"));              /* @0x25c8  terminator rekordu    */
+
+    /* [REC] pola DP/OD/DS/SD/SN/WY/GG w tym buildzie sa w wiekszosci stale;
+     *       dynamiczne sa: R=3/<n>, MEM=<bank>:<adr> oraz tresc po LOGUJ-;.
+     *       Wartosci pozycji pochodza ze struktury 'fix' (UTC/LAT/LON/...).  */
 }
 
 /* Handshake z serwerem (@0x... ST_HSK). Przy bledzie: "-HSK-ERROR", po 5s retry */
@@ -489,7 +557,10 @@ static void get_field(const char *src, uint8_t off, uint8_t width, char *dst)
 static struct {
     uint32_t t0;          /* 0x0242 */
     uint32_t t1;          /* 0x023E */
-    uint8_t  p257;        /* 0x0257  (default 6) */
+    uint8_t  p257;        /* 0x0257  licznik odliczajacy cykle do wyslania:
+                           *   init=2 (@0x01a0), default z CONFIG=6 (@0x34d0),
+                           *   odczyt-dekrementacja-zapis @0x477c/0x4786,
+                           *   porownywany @0x11da/0x2bd2 -> wyzwala raport.    */
     uint8_t  p_b5e;       /* 0x0B5E */
     uint16_t p268a;       /* 0x0268 */
     uint8_t  p268b;       /* 0x0268+ */

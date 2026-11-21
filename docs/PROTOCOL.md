@@ -20,6 +20,20 @@ Protokół tekstowy, znaki `;` jako separatory. Rodzaje ramek:
 Pola stanu spotykane w ramkach: `A=1` (aktywny), `R=3/`, `DP=0`, `OD=0`,
 `DS=01`, `MEM=`, `SD=1 SN=0`, `WY=1`, `GG=1`, `LOGUJ-;`, `AUTO--;`.
 
+### Budowa ramki `FORM;` (sekwencja @0x23cc..0x25e6)
+
+Sklejana po kolei (`strcpy_P`/`strcat` + `itoa`):
+
+```
+FORM; Er=<status> ;A=1 CAN=1 R=3/<n>  DP=0 OD=0 DS=01 MEM=<bank>:<adr>
+ SD=1 SN=0 WY=1 GG=1 LOGUJ-;<dane_pozycji>;@
+```
+
+Dynamiczne pola: `R=3/<n>` (licznik rekordu, wartość z @0x1dfe),
+`MEM=<bank>:<adr>` (stan pamięci EEPROM), oraz treść po `LOGUJ-;`
+(sparsowane pola GPS z bufora 0x0B42). Pozostałe (`DP/OD/DS/SD/SN/WY/GG`)
+w tym buildzie są w większości stałe.
+
 Handshake (`HSK-02;`) dokleja m.in.: `;2.65;ORANGE;` (wersja + operator),
 `;SIM900;FGP`, `;PA6C`, `;1;TEMP;`. Odpowiedzi serwera:
 `- ADRESY OK -`, `- NOWE ADRESY -`, `- HSK PROBLEM -5s -`, `-CONFIG-ERROR`.
