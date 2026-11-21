@@ -111,6 +111,51 @@ def config_reply(overrides=None):
 
 
 # ---------------------------------------------------------------------------
+# Rekord pozycji z ramki LOK (funkcja 0x210e) — układ PRAWDOPODOBNY.
+# Szerokości z wartości domyślnych parsera NMEA (@0x4b20), znaczenia z etykiet
+# LCD. Początek ma stałą szerokość; reszta (licznik, liczniki zdarzeń, część
+# "!...!" i dane CAN) nie jest rozpisana i jest zwracana w postaci surowej.
+# ---------------------------------------------------------------------------
+RECORD_LAYOUT = [          # (nazwa, szerokość)
+    ("lon", 9),            # dddmm.mmmm bez kropki      (0x0BA1)
+    ("ew", 1),             # E / W                      (0x0BAF)
+    ("lat", 8),            # ddmm.mmmm bez kropki       (0x0B95)
+    ("ns", 1),             # N / S                      (0x0BAD)
+    ("alt_m", 4),          # wysokość [m]   — niepewne  (0x0BCF)
+    ("sats", 2),           # liczba satelitów           (0x0BB1)
+    ("speed_kmh", 3),      # prędkość [km/h]            (0x0BB5)
+    ("utc", 6),            # hhmmss                     (0x0B8D)
+    ("date", 6),           # ddmmrr         — niepewne  (0x0BBD)
+]
+
+
+def decode_record(rec):
+    out, pos = {}, 0
+    for name, width in RECORD_LAYOUT:
+        out[name] = rec[pos:pos + width]
+        pos += width
+    out["rest"] = rec[pos:]
+    try:
+        lat = int(out["lat"][:2]) + int(out["lat"][2:]) / 10000 / 60
+        lon = int(out["lon"][:3]) + int(out["lon"][3:]) / 10000 / 60
+        out["lat_deg"] = round(-lat if out["ns"] == "S" else lat, 6)
+        out["lon_deg"] = round(-lon if out["ew"] == "W" else lon, 6)
+    except ValueError:
+        pass
+    return out
+
+
+def describe_record(rec):
+    r = decode_record(rec)
+    if "lat_deg" not in r:
+        return rec
+    t, dt = r["utc"], r["date"]
+    return (f"{dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]} UTC  "
+            f"{r['lat_deg']:.6f}, {r['lon_deg']:.6f}  {int(r['speed_kmh'] or 0)} km/h  "
+            f"sat={r['sats']} alt={r['alt_m']}  reszta={r['rest']!r}")
+
+
+# ---------------------------------------------------------------------------
 # Obsługa ramek
 # ---------------------------------------------------------------------------
 def handle_frame(frame, args):
@@ -139,7 +184,9 @@ def handle_frame(frame, args):
         head, _, rest = frame.partition("$")
         records = [r for r in rest.split("$") if r]
         lines = [f"LOK  IMEI={head[7:]}  rekordow={len(records)}"]
-        lines += [f"    rekord {i + 1}: {r}" for i, r in enumerate(records)]
+        for i, r in enumerate(records):
+            lines.append(f"    rekord {i + 1}: {r}")
+            lines.append(f"              -> {describe_record(r)}")
         return "\n".join(lines), "{OK}"
 
     if frame.startswith(("LOGUJ-;", "AUTO--;")):

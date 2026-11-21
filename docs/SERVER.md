@@ -60,6 +60,38 @@ sekundę przez zegar (przerwanie TIMER1_OVF).
 ## Ramka LOK
 
 `LOK-02;<IMEI>$`, potem do `n` rekordów (n z poz. 18 CONFIG), każdy
-zakończony `$`. Rekord składa funkcja `0x210e` z liczb, pól z parsera NMEA
-i danych CAN (część pól rozdzielona `!`). Dokładny układ pól rekordu nie jest
-jeszcze rozpisany — serwer zapisuje rekordy w postaci surowej.
+zakończony `$`. Rekord składa funkcja `0x210e`, sklejając pola **bez
+separatorów**, więc początek ma stałą szerokość. Układ **prawdopodobny** —
+szerokości z wartości wpisywanych przy błędach parsera NMEA (`@0x4b20`),
+znaczenia z etykiet LCD (`UTC-`, `ALT-`, `LON-`, `LAT-`, `SAT-`, `SPEED-`):
+
+| pole | szer. | przykład | źródło | pewność |
+|---|---|---|---|---|
+| długość geogr. `dddmm.mmmm` bez kropki | 9 | `021007000` | GGA | wysoka |
+| `E` / `W` | 1 | `E` | GGA | wysoka |
+| szerokość geogr. `ddmm.mmmm` bez kropki | 8 | `52138000` | GGA | wysoka |
+| `N` / `S` | 1 | `N` | GGA | wysoka |
+| wysokość [m] | 4 | `0110` | GGA | średnia |
+| liczba satelitów | 2 | `07` | GGA | średnia |
+| prędkość [km/h] | 3 | `048` | VTG | średnia |
+| czas UTC `hhmmss` | 6 | `120100` | GGA | wysoka |
+| data `ddmmrr` | 6 | `010126` | RMC | średnia |
+| licznik (ruch/postój), 2 liczby, `!<pole>!`, 3 wartości CAN | — | — | — | nieznane |
+
+Serwer dekoduje początek rekordu (`decode_record()`), a całość zawsze zapisuje
+też w postaci surowej. Układ trzeba potwierdzić na prawdziwej ramce.
+
+## Test
+
+`server/test_client.py` udaje urządzenie (zmyślony IMEI i trasa) i sprawdza
+odpowiedzi regułami firmware, a potem robi test odwrotny — czy złe odpowiedzi
+są odrzucane:
+
+```bash
+python3 tracker_server.py --port 3506 --device-host example.entrydns.org
+python3 test_client.py --port 3506 --device-host example.entrydns.org
+```
+
+Uwaga: suma XOR jest słaba — dwa takie same przekłamania bitu się znoszą
+(test pokazuje to na przykładzie separatorów `;` → `:`, które firmware i tak
+pomija).

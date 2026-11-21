@@ -36,6 +36,7 @@ docs/     PROTOCOL.md         — ramki protokołu serwera + komendy AT/SMS
           ROAMING.md          — tryby roamingu i tabela krajów/operatorów
           SERVER.md           — wymagania po stronie serwera
 server/   tracker_server.py   — serwer testowy (Python 3)
+          test_client.py      — symulacja urządzenia + sprawdzenie odpowiedzi
 reverse/  flash.bin           — oryginalny obraz flash (materiał źródłowy)
           flash_disasm.txt    — pełny deasembler AVR do weryfikacji
 ```
