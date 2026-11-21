@@ -56,7 +56,7 @@ AT+CSTT="internet"   APN
 AT+CIICR             podniesienie łącza
 AT+CIFSR             lokalny IP
 AT+CIPHEAD=1         nagłówek w odbieranych danych
-AT+CIPSTART=...      otwarcie TCP do serwera
+AT+CIPSTART=TCP,<host>,<port>   otwarcie TCP (host+port z EEPROM, domyślnie lgps01...:3506)
 AT+CIPSEND           wysyłka (kończona Ctrl-Z, 0x1A)
 AT+COPS=1,2,/4,2,    wybór operatora (kontrola roamingu)
 ```

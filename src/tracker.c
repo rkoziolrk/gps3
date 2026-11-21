@@ -116,7 +116,8 @@ static char  modem_ver[8];        /* "2.65" z AT+CGMR / "ver="               */
 static char  imei[16];            /* z AT+GSN  ("IMEI>")                      */
 static char  apn[16]       = "internet";
 static char  server_host[40];     /* "lXX.monitoring-gps.net"                */
-static uint16_t server_port;      /* domyslnie z CONFIG                       */
+static char     server_port_str[5]; /* port TCP serwera, np. "3506" (EEPROM 0x01) */
+static uint16_t server_port;      /* ta sama wartosc liczbowo (po atoi)       */
 static uint8_t  csq;              /* sila sygnalu z AT+CSQ                    */
 static uint8_t  roaming_block;    /* "ZAKAZ ROAMINGU"                         */
 
@@ -451,11 +452,15 @@ static void sim900_roaming(void)
 static uint8_t sim900_tcp_open(void)
 {
     char cmd[80];
-    /* host = "lXX" + ".MONITORING-GPS.NET"  (0xc230 "LGPS", 0xc236 sufiks)     */
-    strcpy(cmd, "AT+CIPSTART=\"TCP\",\"");
-    strcat(cmd, server_host);
-    strcat(cmd, "\",");
-    itoa(server_port, cmd + strlen(cmd), 10);
+    /* Skladanie jak w obrazie @0x3d34..0x3dd4:
+     *   "AT+CIPSTART=" + "TCP" + "," + host + "," + port
+     * host i port pochodza z EEPROM (po walidacji w config_load).              */
+    strcpy_P(cmd, PSTR("AT+CIPSTART="));   /* @0x3d34 */
+    strcat_P(cmd, PSTR("TCP"));            /* @0x3d54 */
+    strcat_P(cmd, PSTR(","));              /* @0x3d74 */
+    strcat(cmd, server_host);              /* @0x3d94  np. lgps03.monitoring-gps.net */
+    strcat_P(cmd, PSTR(","));              /* @0x3db4 */
+    strcat(cmd, server_port_str);          /* @0x3dd4  np. "3506"               */
     sim900_cmd(cmd);                       /* oczekiwanie na CONNECT OK         */
     return 1;
 }
@@ -508,7 +513,7 @@ static void sms_poll(void)
  *
  *    off   dlug.  zawartosc w zrzucie            znaczenie
  *    ----  -----  ----------------------------   -----------------------------
- *    0x01   5     "3506"                         ID/typ urzadzenia
+ *    0x01   5     "3506"                         PORT TCP serwera (4 cyfry+NUL)
  *    0x0A  26     "lgps03.monitoring-gps.net"    adres serwera (host)
  *    0x2F   1     "1"                            flaga (tryb/aktywny)
  *    0x3C   3     52 6e 3c (bin)                 param binarny (3 bajty)
@@ -522,7 +527,7 @@ static void sms_poll(void)
 
 struct eeconfig {
     uint8_t  _r0;          /* 0x00  (0xFF)                                     */
-    char     id[5];        /* 0x01  "3506"                                     */
+    char     port[5];      /* 0x01  "3506"  port TCP serwera                   */
     uint8_t  _r6[4];       /* 0x06  0xFF 00 FF FF                              */
     char     host[26];     /* 0x0A  "lgps03.monitoring-gps.net"               */
     uint8_t  _r24[11];     /* 0x24                                             */
@@ -541,20 +546,43 @@ struct eeconfig {
 static struct eeconfig EEMEM ee_cfg;    /* alokacja od 0x0000 EEPROM           */
 
 /* Kontrola, ze pola struktury trafiaja dokladnie w offsety ze zrzutu: */
-_Static_assert(offsetof(struct eeconfig, id)      == 0x01, "id@0x01");
+_Static_assert(offsetof(struct eeconfig, port)    == 0x01, "port@0x01");
 _Static_assert(offsetof(struct eeconfig, host)    == 0x0A, "host@0x0A");
 _Static_assert(offsetof(struct eeconfig, flag_2f) == 0x2F, "flag@0x2F");
 _Static_assert(offsetof(struct eeconfig, counter) == 0x5A, "counter@0x5A");
 _Static_assert(offsetof(struct eeconfig, p_67)    == 0x67, "p67@0x67");
 
-/* Wczytanie konfiguracji z EEPROM do zmiennych roboczych (przy starcie). */
+/* Wczytanie i walidacja adresu serwera (host + port) z EEPROM.
+ * Odwzorowanie logiki @0x7c80..0x7d40:
+ *   - host pusty/skasowany        -> "ADRES MEM ERROR", default lgps01...
+ *   - dlugosc portu != 4 cyfry    -> "PORT MEM LEN ERROR", default "3506"
+ *   - atoi(port) == 0             -> "PORT MEM VAL ERROR", default "3506"
+ *   - inaczej                     -> "ADRES MEM OK" / "PORT MEM OK"          */
 static void config_load(void)
 {
+    /* --- host (EEPROM 0x0A) --- */
     eeprom_read_block(server_host, ee_cfg.host, sizeof(ee_cfg.host));
     server_host[sizeof(ee_cfg.host) - 1] = '\0';
-    if ((uint8_t)server_host[0] == 0xFF || server_host[0] == '\0')
-        strcpy_P(server_host, PSTR(SERVER_DEFAULT));   /* fallback z flasha    */
-    lcd_puts_P(PSTR("ADRES MEM OK"));                  /* 0xc24a               */
+    if ((uint8_t)server_host[0] == 0xFF || server_host[0] == '\0') {
+        lcd_puts_P(PSTR("ADRES MEM ERROR"));           /* 0xc258  @0x7c8a      */
+        strcpy_P(server_host, PSTR(SERVER_DEFAULT));   /* @0x7c98 lgps01...    */
+    } else {
+        lcd_puts_P(PSTR("ADRES MEM OK"));              /* 0xc24a               */
+    }
+
+    /* --- port (EEPROM 0x01) --- */
+    eeprom_read_block(server_port_str, ee_cfg.port, sizeof(ee_cfg.port));
+    server_port_str[sizeof(ee_cfg.port) - 1] = '\0';
+    if (strlen(server_port_str) != 4) {                /* cpi r16,0x04 @0x7cd2 */
+        lcd_puts_P(PSTR("PORT MEM LEN ERROR"));        /* @0x7cde              */
+        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));  /* @0x7cec "3506" */
+    } else if (atoi(server_port_str) == 0) {           /* atoi + cpi 0 @0x7d3e */
+        lcd_puts_P(PSTR("PORT MEM VAL ERROR"));        /* 0xc28c               */
+        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));
+    } else {
+        lcd_puts_P(PSTR("PORT MEM OK"));               /* 0xc280               */
+    }
+    server_port = (uint16_t)atoi(server_port_str);
 }
 
 /* Zapis nowego adresu serwera (SMS "NEW*ADR="). */
@@ -562,7 +590,7 @@ static void config_save_host(const char *host)
 {
     lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));              /* 0xbbaa               */
     eeprom_update_block(host, ee_cfg.host, sizeof(ee_cfg.host));
-    lcd_puts_P(PSTR("PORT MEM OK"));
+    lcd_puts_P(PSTR("Zapisano w pamieci "));           /* 0xbd44               */
 }
 
 /* Inkrementacja 6-cyfrowego licznika sesji w EEPROM ("000001" -> ...). */
@@ -591,12 +619,11 @@ static uint8_t old_head, old_tail;
 static void mem_store_record(const char *rec)
 {
     uint8_t nx = (uint8_t)((old_tail + 1) % OLD_SLOTS);
-    if (nx == old_head) { lcd_puts_P(PSTR("PORT MEM LEN ERROR")); return; }  /* pelno */
+    if (nx == old_head) return;            /* bufor pelny — rekord przepada     */
     lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));
     strncpy(old_q[old_tail], rec, OLD_SIZE - 1);
     old_q[old_tail][OLD_SIZE - 1] = '\0';
     old_tail = nx;
-    lcd_puts_P(PSTR("PORT MEM OK"));
 }
 
 static void send_old_records(void)

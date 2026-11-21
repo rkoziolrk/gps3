@@ -8,7 +8,7 @@ Poza obszarem konfiguracji (0x00–0x6A) cała pamięć = `0xFF` (skasowana).
 
 | offset | dług. | zawartość w zrzucie           | znaczenie                      |
 |--------|-------|-------------------------------|--------------------------------|
-| 0x01   | 5     | `3506`                        | ID / typ urządzenia            |
+| 0x01   | 5     | `3506`                        | **port TCP serwera**           |
 | 0x0A   | 26    | `lgps03.monitoring-gps.net`   | adres serwera (host)           |
 | 0x2F   | 1     | `1`                           | flaga (tryb / aktywny)         |
 | 0x3C   | 3     | `52 6e 3c` (bin)              | parametr binarny (3 bajty)     |
@@ -18,8 +18,20 @@ Poza obszarem konfiguracji (0x00–0x6A) cała pamięć = `0xFF` (skasowana).
 | 0x67   | 3     | `020`                         | parametr numeryczny            |
 
 Struktura `struct eeconfig` w `src/tracker.c` odwzorowuje te offsety 1:1
-(sprawdzane `_Static_assert` przy kompilacji). Host domyślny (gdy EEPROM pusty)
-pochodzi z flasha: `lgps01.monitoring-gps.net`.
+(sprawdzane `_Static_assert` przy kompilacji). Host i port tworzą razem adres
+serwera: `lgps03.monitoring-gps.net:3506`. Wartości domyślne (flash 0xbbda):
+host `lgps01.monitoring-gps.net`, port `3506`.
+
+## Walidacja przy starcie (@0x7c80..0x7d40)
+
+| warunek                        | komunikat LCD          | reakcja              |
+|--------------------------------|------------------------|----------------------|
+| host pusty / skasowany         | `ADRES MEM ERROR`      | host = `lgps01...`   |
+| długość portu ≠ 4              | `PORT MEM LEN ERROR`   | port = `3506`        |
+| `atoi(port) == 0`              | `PORT MEM VAL ERROR`   | port = `3506`        |
+| poprawne                       | `ADRES MEM OK` / `PORT MEM OK` | —            |
+
+Potem `AT+CIPSTART=TCP,<host>,<port>` (@0x3d34).
 
 ## Obserwacje
 

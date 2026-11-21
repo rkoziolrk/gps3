@@ -46,6 +46,7 @@
 /* --- Serwer -------------------------------------------------------------- */
 #define SERVER_SUFFIX  ".MONITORING-GPS.NET"
 #define SERVER_DEFAULT "lgps01.monitoring-gps.net"
+#define SERVER_PORT_DEFAULT "3506"  /* domyslny port TCP (flash 0xbbda)         */
 #define APN_DEFAULT    "internet"
 
 /* --- Wersja (string z obrazu: "ver=2.65") -------------------------------- */
