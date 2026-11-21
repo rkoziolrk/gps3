@@ -42,6 +42,7 @@
 #include <avr/wdt.h>
 #include <avr/pgmspace.h>
 #include <avr/eeprom.h>
+#include <stddef.h>
 #include <util/delay.h>
 #include <string.h>
 #include <stdlib.h>
@@ -472,6 +473,9 @@ static void sim900_tcp_send(const char *payload)
  *    "RESET*" / "RESET-"  -> KOMENDA RESET  (restart lokalizatora)
  *    "NEW*ADR="           -> zmiana adresu serwera, zapis do EEPROM
  *  Po przetworzeniu: AT+CMGD (kasowanie) -> "SMS IS CLEAR".                    */
+static void reset_mcu(void);                       /* def. nizej                 */
+static void config_save_host(const char *host);    /* def. nizej                 */
+
 static void sms_poll(void)
 {
     char buf[160];
@@ -479,79 +483,129 @@ static void sms_poll(void)
     sim900_cmd("AT+CMGF=1");               /* tryb tekstowy                     */
     sim900_cmd("AT+CMGR=1");               /* odczyt 1. wiadomosci              */
     /* [REC] jesli "ERROR"/"[Brak SMS]" -> wyjdz */
-    /* if (strstr_P(buf, PSTR("RESET"))) { lcd_puts_P(PSTR("KOMENDA RESET")); reset_mcu(); } */
-    /* if (strstr_P(buf, PSTR("NEW*ADR="))) { parse_new_server(buf); save_config_eeprom(); } */
+    if (strstr_P(buf, PSTR("RESET"))) {    /* "RESET*"/"RESET-" -> restart       */
+        lcd_puts_P(PSTR("KOMENDA RESET"));
+        reset_mcu();
+    }
+    {   char *p = strstr_P(buf, PSTR("NEW*ADR="));   /* zmiana hosta serwera      */
+        if (p) { config_save_host(p + 8); }
+    }
     sim900_cmd("AT+CMGD=1");               /* skasuj                            */
     lcd_puts_P(PSTR("SMS IS CLEAR"));
     (void)buf;
 }
 
 /* ========================================================================== *
- *  [HW/REC]  Pamiec rekordow "OLD" w wewnetrznym EEPROM ATmega64             *
+ *  [HW]  Konfiguracja w wewnetrznym EEPROM ATmega64                          *
  * ========================================================================== *
- *  KOREKTA: to NIE jest EEPROM I2C. W obrazie dostep idzie przez rejestry
- *  sprzetowego EEPROM AVR: EEARL/EEARH (@0xb810), EEDR (@0xb82a), EECR — czyli
- *  avr-libc <avr/eeprom.h>. Uzywamy gotowych funkcji bibliotecznych.
+ *  Dostep przez sprzetowy EEPROM AVR -> avr-libc <avr/eeprom.h>. Prymitywy
+ *  potwierdzone w obrazie: @0xb80c (czekaj EEWE + ustaw EEAR), @0xb818 (zapis
+ *  EEDR + EEMWE|EEWE), @0xb83a (odczyt: EERE, in EEDR).
  *
- *  Logiczne adresowanie "Bank=" / "Adr=" (stringi 0xbbbc / 0xbbc2) dzieli
- *  2 KiB EEPROM na banki po REC_SIZE bajtow. Kolejka FIFO rekordow pozycji
- *  zapisywanych przy braku zasiegu; po odzyskaniu laczna wysylane jako "LOO".
- *  Statusy na LCD: "ADRES MEM OK/ERROR", "PORT MEM OK/LEN ERROR/VAL ERROR".    */
+ *  UKLAD ZWERYFIKOWANY ZE ZRZUTU eeprom.bin (reverse/eeprom.bin, 2 KiB) —
+ *  to NIE jest kolejka FIFO rekordow, tylko MAGAZYN KONFIGURACJI. Pola
+ *  (offsety z realnego zrzutu; reszta pamieci = 0xFF, skasowana):
+ *
+ *    off   dlug.  zawartosc w zrzucie            znaczenie
+ *    ----  -----  ----------------------------   -----------------------------
+ *    0x01   5     "3506"                         ID/typ urzadzenia
+ *    0x0A  26     "lgps03.monitoring-gps.net"    adres serwera (host)
+ *    0x2F   1     "1"                            flaga (tryb/aktywny)
+ *    0x3C   3     52 6e 3c (bin)                 param binarny (3 bajty)
+ *    0x42   3     "021"                          param numeryczny
+ *    0x5A   6     "000001"                       licznik sesji/rekordu
+ *    0x64   1     "3"                            flaga
+ *    0x67   3     "020"                          param numeryczny
+ *
+ *  Obraz czyta te pola przy starcie (sekcja init) i aktualizuje je m.in. przy
+ *  SMS "NEW*ADR=" (zmiana hosta) oraz przy inkrementacji licznika sesji.       */
 
-#define REC_SIZE   48                   /* dlugosc jednego rekordu pozycji     */
-#define REC_SLOTS  40                   /* ~2KiB/48, zostawiajac miejsce na glowe*/
+struct eeconfig {
+    uint8_t  _r0;          /* 0x00  (0xFF)                                     */
+    char     id[5];        /* 0x01  "3506"                                     */
+    uint8_t  _r6[4];       /* 0x06  0xFF 00 FF FF                              */
+    char     host[26];     /* 0x0A  "lgps03.monitoring-gps.net"               */
+    uint8_t  _r24[11];     /* 0x24                                             */
+    char     flag_2f;      /* 0x2F  '1'                                        */
+    uint8_t  _r30[12];     /* 0x30                                             */
+    uint8_t  bin_3c[3];    /* 0x3C  52 6e 3c                                   */
+    uint8_t  _r3f[3];      /* 0x3F                                             */
+    char     p_42[3];      /* 0x42  "021"                                      */
+    uint8_t  _r45[21];     /* 0x45                                             */
+    char     counter[6];   /* 0x5A  "000001"                                   */
+    uint8_t  _r60[4];      /* 0x60                                             */
+    char     flag_64;      /* 0x64  '3'                                        */
+    uint8_t  _r65[2];      /* 0x65                                             */
+    char     p_67[3];      /* 0x67  "020"                                      */
+};
+static struct eeconfig EEMEM ee_cfg;    /* alokacja od 0x0000 EEPROM           */
 
-/* Glowa/ogon kolejki trzymane na koncu EEPROM (poza obszarem rekordow).       */
-static uint8_t EEMEM ee_head;           /* indeks najstarszego rekordu         */
-static uint8_t EEMEM ee_tail;           /* indeks nastepnego wolnego slotu     */
-static uint8_t EEMEM ee_recs[REC_SLOTS][REC_SIZE];
+/* Kontrola, ze pola struktury trafiaja dokladnie w offsety ze zrzutu: */
+_Static_assert(offsetof(struct eeconfig, id)      == 0x01, "id@0x01");
+_Static_assert(offsetof(struct eeconfig, host)    == 0x0A, "host@0x0A");
+_Static_assert(offsetof(struct eeconfig, flag_2f) == 0x2F, "flag@0x2F");
+_Static_assert(offsetof(struct eeconfig, counter) == 0x5A, "counter@0x5A");
+_Static_assert(offsetof(struct eeconfig, p_67)    == 0x67, "p67@0x67");
 
-static uint8_t mem_count(void)          /* ile rekordow czeka */
+/* Wczytanie konfiguracji z EEPROM do zmiennych roboczych (przy starcie). */
+static void config_load(void)
 {
-    uint8_t h = eeprom_read_byte(&ee_head);
-    uint8_t t = eeprom_read_byte(&ee_tail);
-    return (uint8_t)((t - h + REC_SLOTS) % REC_SLOTS);
+    eeprom_read_block(server_host, ee_cfg.host, sizeof(ee_cfg.host));
+    server_host[sizeof(ee_cfg.host) - 1] = '\0';
+    if ((uint8_t)server_host[0] == 0xFF || server_host[0] == '\0')
+        strcpy_P(server_host, PSTR(SERVER_DEFAULT));   /* fallback z flasha    */
+    lcd_puts_P(PSTR("ADRES MEM OK"));                  /* 0xc24a               */
 }
 
-/* Zapis rekordu do EEPROM (bank = slot, adr = offset). */
-static void mem_store_record(const char *rec)
+/* Zapis nowego adresu serwera (SMS "NEW*ADR="). */
+static void config_save_host(const char *host)
 {
-    uint8_t t = eeprom_read_byte(&ee_tail);
-    if (mem_count() >= REC_SLOTS - 1) {            /* pelno -> "PORT MEM LEN ERROR" */
-        lcd_puts_P(PSTR("PORT MEM LEN ERROR"));
-        return;
-    }
-    lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));          /* 0xbbaa */
-    eeprom_write_block(rec, ee_recs[t], REC_SIZE);
-    eeprom_write_byte(&ee_tail, (uint8_t)((t + 1) % REC_SLOTS));
+    lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));              /* 0xbbaa               */
+    eeprom_update_block(host, ee_cfg.host, sizeof(ee_cfg.host));
     lcd_puts_P(PSTR("PORT MEM OK"));
 }
 
-/* Odczyt najstarszego rekordu (bez usuwania). Zwraca 1 gdy byl rekord. */
-static int mem_read_record(char *out)
+/* Inkrementacja 6-cyfrowego licznika sesji w EEPROM ("000001" -> ...). */
+static void config_bump_counter(void)
 {
-    uint8_t h = eeprom_read_byte(&ee_head);
-    if (mem_count() == 0) return 0;
-    lcd_puts_P(PSTR("ODCZYT Z PAMIECI"));          /* 0xbbc8 */
-    eeprom_read_block(out, ee_recs[h], REC_SIZE);
-    out[REC_SIZE - 1] = '\0';
-    return 1;
+    char c[7];
+    uint32_t n;
+    eeprom_read_block(c, ee_cfg.counter, 6); c[6] = '\0';
+    n = strtoul(c, NULL, 10) + 1;
+    /* sformatuj z wiodacymi zerami na 6 cyfr */
+    for (int i = 5; i >= 0; i--) { c[i] = '0' + (n % 10); n /= 10; }
+    eeprom_update_block(c, ee_cfg.counter, 6);
 }
 
-/* Potwierdzenie wyslania -> zdejmij z kolejki. */
-static void mem_pop(void)
+/* --------------------------------------------------------------------------
+ *  Bufor rekordow "OLD" na czas braku zasiegu.
+ *  UWAGA: w zrzucie EEPROM nie ma rekordow pozycji (obszar poza konfiguracja
+ *  jest skasowany 0xFF) — kolejka byla pusta albo rekordy sa buforowane w RAM.
+ *  Modelujemy ja w RAM (ulotna); logika wysylki jak w obrazie ("LOO").
+ * -------------------------------------------------------------------------- */
+#define OLD_SLOTS  8
+#define OLD_SIZE   48
+static char    old_q[OLD_SLOTS][OLD_SIZE];
+static uint8_t old_head, old_tail;
+
+static void mem_store_record(const char *rec)
 {
-    uint8_t h = eeprom_read_byte(&ee_head);
-    eeprom_write_byte(&ee_head, (uint8_t)((h + 1) % REC_SLOTS));
+    uint8_t nx = (uint8_t)((old_tail + 1) % OLD_SLOTS);
+    if (nx == old_head) { lcd_puts_P(PSTR("PORT MEM LEN ERROR")); return; }  /* pelno */
+    lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));
+    strncpy(old_q[old_tail], rec, OLD_SIZE - 1);
+    old_q[old_tail][OLD_SIZE - 1] = '\0';
+    old_tail = nx;
+    lcd_puts_P(PSTR("PORT MEM OK"));
 }
 
 static void send_old_records(void)
 {
-    char rec[REC_SIZE];
     lcd_puts_P(PSTR("LOO-BE"));          /* begin */
-    if (mem_read_record(rec)) {
-        sim900_tcp_send(rec);            /* "LOO-02;..." */
-        mem_pop();                       /* po potwierdzeniu wyslania           */
+    if (old_head != old_tail) {
+        lcd_puts_P(PSTR("ODCZYT Z PAMIECI"));
+        sim900_tcp_send(old_q[old_head]);           /* "LOO-02;..."            */
+        old_head = (uint8_t)((old_head + 1) % OLD_SLOTS);  /* pop po wyslaniu  */
         lcd_puts_P(PSTR("WYSLALEM DANE OLD    "));
     } else {
         lcd_puts_P(PSTR("BRAK DANYCH OLD"));
@@ -814,7 +868,10 @@ int main(void)
     uint8_t state = ST_MODEM_INIT;
 
     hw_init();                             /* @0x8c  [HW] */
+    config_load();                         /* wczytaj host/ID/licznik z EEPROM  */
+    config_bump_counter();                 /* nowa sesja -> licznik++           */
     gps_config();                          /* PMTK: wybor zdan NMEA */
+    lcd_clear_home();
     lcd_puts_P(PSTR("SIM900"));
     lcd_puts_P(PSTR("ver="));            /* "2.65" */
 
