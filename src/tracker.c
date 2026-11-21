@@ -10,7 +10,8 @@
  *  Peryferia      : GPS  GlobalTop PA6C  (NMEA, PMTK)
  *                   GSM  SIMCom SIM900   (GPRS, AT)
  *                   CAN  (czujnik paliwa / RPM / pedal)
- *                   EEPROM I2C (bufor rekordow "OLD" do wyslania)
+ *                   pamiec zewnetrzna na programowym I2C (PD0/PD1),
+ *                   najpewniej bufor rekordow "OLD" (Bank=/Adr=)
  *  Serwer         : lgps01.monitoring-gps.net  (oraz lXX.monitoring-gps.net)
  *                   lokalizator wysyla ramki protokolu znakowego (PNG/FORM/HSK/LOK/LOO/CONFIG)
  *
@@ -119,7 +120,15 @@ static char  server_host[40];     /* "lXX.monitoring-gps.net"                */
 static char     server_port_str[5]; /* port TCP serwera, np. "3506" (EEPROM 0x01) */
 static uint16_t server_port;      /* ta sama wartosc liczbowo (po atoi)       */
 static uint8_t  csq;              /* sila sygnalu z AT+CSQ                    */
-static uint8_t  roaming_block;    /* "ZAKAZ ROAMINGU"                         */
+static char     net_mcc[4];       /* 0x0B6D  MCC biezacej sieci, "260" = PL   */
+static uint8_t  roaming_mode = 3; /* tryb roamingu z EEPROM 0x64 (0..7)       */
+static uint8_t  roam_op_idx = 1;  /* 0x0C3B  indeks operatora (EEPROM 0x3F)   */
+static char     last_reply[16];   /* ostatnia linia odpowiedzi (nie-NMEA)     */
+
+/* Prototypy funkcji zdefiniowanych nizej. */
+static void restart_with_reason(uint8_t code);
+static void config_save_roam_op(uint8_t idx);
+static void config_save_host(const char *host);
 
 /* Pozycja GPS po sparsowaniu RMC/GGA/VTG */
 static struct {
@@ -299,7 +308,8 @@ ISR(USART0_RX_vect)
 }
 
 /* ========================================================================== */
-/*  [REC]  Parser NMEA (PA6C)  — @0x186c (RMC/GGA), @0x1c5e (VTG)              */
+/*  [REC]  Parser NMEA (PA6C)  — funkcja @0x4b20 (RMC ~0x4ca0, GGA ~0x5380,     */
+/*         VTG ~0x56a4). UWAGA: 0x186c i 0x1c5e to funkcje EEPROM, nie NMEA.  */
 /* ========================================================================== */
 /*  Stringi bledow: " - RMC ERROR - " 0xbfaa, " - GGA ERROR - " 0xbfde,
  *                  " - VTG ERROR - " 0xc00a. Pola wypisywane: UTC-/LAT-/LON-/
@@ -381,8 +391,10 @@ static uint8_t nmea_poll(void)
     if      (!strncmp_P(nmea, PSTR("$GPRMC"), 6)) new_fix = gps_parse_rmc(nmea);
     else if (!strncmp_P(nmea, PSTR("$GPGGA"), 6)) gps_parse_gga(nmea);
     else if (!strncmp_P(nmea, PSTR("$GPVTG"), 6)) gps_parse_vtg(nmea);
-    /* pozostale linie (odpowiedzi AT modemu: OK / ERROR / +CSQ / +CENG ...)
-     * obsluguje osobno warstwa modemu — tu je pomijamy.                        */
+    else {  /* inne linie: odpowiedzi modemu / serwera (OK, ERROR, ...)       */
+        strncpy(last_reply, nmea, sizeof(last_reply) - 1);
+        last_reply[sizeof(last_reply) - 1] = '\0';
+    }
 
     return new_fix;
 }
@@ -438,14 +450,31 @@ static uint8_t sim900_gprs_attach(void)
 }
 
 /* Blokada/zezwolenie roamingu (@0xc0dc "ZAKAZ ROAMINGU", 0xc210/0xc21e COPS) */
+/* Roaming (@0x6480..0x7600):
+ *  - siec 260 (Polska)               -> nic nie robimy ("KRAJ")
+ *  - za granica i tryb (EEPROM 0x64) == 0 -> "ZAKAZ ROAMINGU", restart kod 23
+ *  - za granica, tryb != 0           -> reczny wybor operatora z tabeli
+ *    preferowanych sieci (MCC -> lista MNC, @0x6f00..0x7180; m.in. 262, 278,
+ *    242, 268, 226, 231, 293, 240, 216, 234, 222) przez AT+COPS=1,2,<MCCMNC>;
+ *    przy braku OK fallback AT+COPS=4,2,... (reczny z powrotem do automatu).
+ *    Indeks probowanego operatora (EEPROM 0x3F) rotuje; po 4 probach -> 1.
+ *  Tabela MNC nie jest tu przepisana — ponizej tylko logika wyboru.           */
 static void sim900_roaming(void)
 {
-    if (roaming_block) {
-        lcd_puts_P(PSTR("ZAKAZ ROAMINGU "));
-        sim900_cmd("AT+COPS=4,2,");        /* wymus konkretnego operatora       */
-    } else {
-        sim900_cmd("AT+COPS=1,2,");        /* automatyczny wybor                */
+    char cmd[24];
+    if (strcmp_P(net_mcc, PSTR("260")) == 0) {
+        lcd_puts_P(PSTR("KRAJ"));
+        return;
     }
+    lcd_puts_P(PSTR("ZAGRANICA"));
+    if (roaming_mode == 0) {
+        lcd_puts_P(PSTR("ZAKAZ ROAMINGU "));
+        restart_with_reason(23);           /* kod 23 @0x671e                    */
+    }
+    strcpy_P(cmd, PSTR("AT+COPS=1,2,"));   /* reczny wybor operatora            */
+    strcat(cmd, net_mcc);                  /* + MNC z tabeli dla roam_op_idx    */
+    sim900_cmd(cmd);
+    config_save_roam_op((uint8_t)(roam_op_idx + 1));   /* nastepny przy porazce */
 }
 
 /* Otwarcie polaczenia TCP do serwera (@0xbe52 CIPSTART, 0xbe6a CIPSEND) */
@@ -478,8 +507,6 @@ static void sim900_tcp_send(const char *payload)
  *    "RESET*" / "RESET-"  -> KOMENDA RESET  (restart lokalizatora)
  *    "NEW*ADR="           -> zmiana adresu serwera, zapis do EEPROM
  *  Po przetworzeniu: AT+CMGD (kasowanie) -> "SMS IS CLEAR".                    */
-static void reset_mcu(void);                       /* def. nizej                 */
-static void config_save_host(const char *host);    /* def. nizej                 */
 
 static void sms_poll(void)
 {
@@ -490,7 +517,7 @@ static void sms_poll(void)
     /* [REC] jesli "ERROR"/"[Brak SMS]" -> wyjdz */
     if (strstr_P(buf, PSTR("RESET"))) {    /* "RESET*"/"RESET-" -> restart       */
         lcd_puts_P(PSTR("KOMENDA RESET"));
-        reset_mcu();
+        restart_with_reason(27);           /* kod 27 @0x864e                  */
     }
     {   char *p = strstr_P(buf, PSTR("NEW*ADR="));   /* zmiana hosta serwera      */
         if (p) { config_save_host(p + 8); }
@@ -503,114 +530,268 @@ static void sms_poll(void)
 /* ========================================================================== *
  *  [HW]  Konfiguracja w wewnetrznym EEPROM ATmega64                          *
  * ========================================================================== *
- *  Dostep przez sprzetowy EEPROM AVR -> avr-libc <avr/eeprom.h>. Prymitywy
- *  potwierdzone w obrazie: @0xb80c (czekaj EEWE + ustaw EEAR), @0xb818 (zapis
- *  EEDR + EEMWE|EEWE), @0xb83a (odczyt: EERE, in EEDR).
+ *  Dostep przez sprzetowy EEPROM AVR. Prymitywy w obrazie: @0xb80c (czekaj
+ *  EEWE + ustaw EEAR), @0xb81e (zapis r25 bajtow; tylko gdy r23 == 0x7B),
+ *  @0xb840 (odczyt r25 bajtow). Na nich zbudowane sa dwie procedury napisowe:
+ *    @0x1f66  odczyt napisu: bajt po bajcie od adresu, az do 0xFF
+ *    @0x2036  zapis napisu: strlen(s)+1 bajtow (razem z NUL)
+ *  Kazde pole ma wlasna pare funkcji (klaster @0x1532..0x1f66).
  *
- *  UKLAD ZWERYFIKOWANY ZE ZRZUTU eeprom.bin (reverse/eeprom.bin, 2 KiB) —
- *  to NIE jest kolejka FIFO rekordow, tylko MAGAZYN KONFIGURACJI. Pola
- *  (offsety z realnego zrzutu; reszta pamieci = 0xFF, skasowana):
+ *  UKLAD (zweryfikowany ze zrzutem reverse/eeprom.bin i z kodem):
  *
- *    off   dlug.  zawartosc w zrzucie            znaczenie
- *    ----  -----  ----------------------------   -----------------------------
- *    0x01   5     "3506"                         PORT TCP serwera (4 cyfry+NUL)
- *    0x0A  26     "lgps03.monitoring-gps.net"    adres serwera (host)
- *    0x2F   1     "1"                            flaga (tryb/aktywny)
- *    0x3C   3     52 6e 3c (bin)                 param binarny (3 bajty)
- *    0x42   3     "021"                          param numeryczny
- *    0x5A   6     "000001"                       licznik sesji/rekordu
- *    0x64   1     "3"                            flaga
- *    0x67   3     "020"                          param numeryczny
+ *    off   zrzut                         znaczenie                 funkcje
+ *    ----  ----------------------------  ------------------------  -----------
+ *    0x01  "3506"                        port TCP serwera          0x1532/15e0
+ *    0x07  0x00                          XOR(port) — suma kontr.   (j.w.)
+ *    0x0A  "lgps03.monitoring-gps.net"   host serwera              0x1698/1746
+ *    0x2F  0x31 ('1')                    XOR(host) — suma kontr.   (j.w.)
+ *    0x3C  "R" (+"n<", patrz nizej)      ostatni stan ruchu R/P    0x17fe/186c
+ *    0x3F  "" -> domyslnie 1             indeks operatora roaming. 0x193a/198c
+ *    0x42  "021"                         kod ost. restartu (PL)    0x19ee/1aaa
+ *    0x5A  "000001"                      licznik restartow bez OK  0x1b72/1c5e
+ *    0x64  "3"                           tryb roamingu 0..7        0x1dac/1dfe
+ *    0x67  "020"                         kod ost. restartu (≠PL)   0x19ee/1aaa
  *
- *  Obraz czyta te pola przy starcie (sekcja init) i aktualizuje je m.in. przy
- *  SMS "NEW*ADR=" (zmiana hosta) oraz przy inkrementacji licznika sesji.       */
+ *  0x3C: firmware zapisuje tam tylko "R" albo "P"; bajty "n<" po "R" nie
+ *  pochodza z zadnego zapisu, ktory znaleziono w tym obrazie (pozostalosc).
+ *  0x3C i 0x5A sa dodatkowo kopiowane do zewnetrznej pamieci I2C (0xe42),
+ *  patrz docs/EEPROM.md, sekcja "Zewnetrzna pamiec I2C".                      */
 
 struct eeconfig {
-    uint8_t  _r0;          /* 0x00  (0xFF)                                     */
-    char     port[5];      /* 0x01  "3506"  port TCP serwera                   */
-    uint8_t  _r6[4];       /* 0x06  0xFF 00 FF FF                              */
-    char     host[26];     /* 0x0A  "lgps03.monitoring-gps.net"               */
-    uint8_t  _r24[11];     /* 0x24                                             */
-    char     flag_2f;      /* 0x2F  '1'                                        */
-    uint8_t  _r30[12];     /* 0x30                                             */
-    uint8_t  bin_3c[3];    /* 0x3C  52 6e 3c                                   */
-    uint8_t  _r3f[3];      /* 0x3F                                             */
-    char     p_42[3];      /* 0x42  "021"                                      */
-    uint8_t  _r45[21];     /* 0x45                                             */
-    char     counter[6];   /* 0x5A  "000001"                                   */
-    uint8_t  _r60[4];      /* 0x60                                             */
-    char     flag_64;      /* 0x64  '3'                                        */
-    uint8_t  _r65[2];      /* 0x65                                             */
-    char     p_67[3];      /* 0x67  "020"                                      */
+    uint8_t  _r00;                 /* 0x00                                     */
+    char     port[6];              /* 0x01  "3506"                             */
+    uint8_t  port_xor;             /* 0x07  XOR bajtow portu                   */
+    uint8_t  _r08[2];              /* 0x08                                     */
+    char     host[37];             /* 0x0A  "lgps03.monitoring-gps.net"        */
+    uint8_t  host_xor;             /* 0x2F  XOR bajtow hosta                   */
+    uint8_t  _r30[12];             /* 0x30                                     */
+    char     motion[3];            /* 0x3C  "R" = ruch, "P" = postoj           */
+    char     roam_op_idx[3];       /* 0x3F  indeks operatora (tekst, np. "1")  */
+    char     reset_code_home[4];   /* 0x42  "021"                              */
+    uint8_t  _r46[20];             /* 0x46                                     */
+    char     restart_count[7];     /* 0x5A  "000001"                           */
+    uint8_t  _r61[3];              /* 0x61                                     */
+    char     roaming_mode[2];      /* 0x64  "3"                                */
+    uint8_t  _r66;                 /* 0x66                                     */
+    char     reset_code_abroad[4]; /* 0x67  "020"                              */
 };
 static struct eeconfig EEMEM ee_cfg;    /* alokacja od 0x0000 EEPROM           */
 
 /* Kontrola, ze pola struktury trafiaja dokladnie w offsety ze zrzutu: */
-_Static_assert(offsetof(struct eeconfig, port)    == 0x01, "port@0x01");
-_Static_assert(offsetof(struct eeconfig, host)    == 0x0A, "host@0x0A");
-_Static_assert(offsetof(struct eeconfig, flag_2f) == 0x2F, "flag@0x2F");
-_Static_assert(offsetof(struct eeconfig, counter) == 0x5A, "counter@0x5A");
-_Static_assert(offsetof(struct eeconfig, p_67)    == 0x67, "p67@0x67");
+_Static_assert(offsetof(struct eeconfig, port)              == 0x01, "port");
+_Static_assert(offsetof(struct eeconfig, port_xor)          == 0x07, "port_xor");
+_Static_assert(offsetof(struct eeconfig, host)              == 0x0A, "host");
+_Static_assert(offsetof(struct eeconfig, host_xor)          == 0x2F, "host_xor");
+_Static_assert(offsetof(struct eeconfig, motion)            == 0x3C, "motion");
+_Static_assert(offsetof(struct eeconfig, roam_op_idx)       == 0x3F, "roam_op_idx");
+_Static_assert(offsetof(struct eeconfig, reset_code_home)   == 0x42, "code_home");
+_Static_assert(offsetof(struct eeconfig, restart_count)     == 0x5A, "restart_count");
+_Static_assert(offsetof(struct eeconfig, roaming_mode)      == 0x64, "roaming_mode");
+_Static_assert(offsetof(struct eeconfig, reset_code_abroad) == 0x67, "code_abroad");
 
-/* Wczytanie i walidacja adresu serwera (host + port) z EEPROM.
- * Odwzorowanie logiki @0x7c80..0x7d40:
- *   - host pusty/skasowany        -> "ADRES MEM ERROR", default lgps01...
- *   - dlugosc portu != 4 cyfry    -> "PORT MEM LEN ERROR", default "3506"
- *   - atoi(port) == 0             -> "PORT MEM VAL ERROR", default "3506"
- *   - inaczej                     -> "ADRES MEM OK" / "PORT MEM OK"          */
-static void config_load(void)
+/* Zmienne RAM powiazane z polami EEPROM (adresy RAM z obrazu). */
+static uint16_t restart_count;     /* 0x0B6B  restarty bez udanej lacznosci    */
+static char     motion_state[4];   /* 0x0266  "R" / "P"                        */
+
+/* @0x1f66 — odczyt napisu z EEPROM (do 0xFF albo NUL). */
+static void ee_read_str(const void *ee, char *dst, uint8_t max)
 {
-    /* --- host (EEPROM 0x0A) --- */
-    eeprom_read_block(server_host, ee_cfg.host, sizeof(ee_cfg.host));
-    server_host[sizeof(ee_cfg.host) - 1] = '\0';
-    if ((uint8_t)server_host[0] == 0xFF || server_host[0] == '\0') {
-        lcd_puts_P(PSTR("ADRES MEM ERROR"));           /* 0xc258  @0x7c8a      */
-        strcpy_P(server_host, PSTR(SERVER_DEFAULT));   /* @0x7c98 lgps01...    */
-    } else {
-        lcd_puts_P(PSTR("ADRES MEM OK"));              /* 0xc24a               */
+    const uint8_t *a = (const uint8_t *)ee;
+    uint8_t i = 0;
+    while (i < max - 1) {
+        uint8_t b = eeprom_read_byte(a++);
+        if (b == 0xFF || b == 0x00) break;
+        dst[i++] = (char)b;
     }
-
-    /* --- port (EEPROM 0x01) --- */
-    eeprom_read_block(server_port_str, ee_cfg.port, sizeof(ee_cfg.port));
-    server_port_str[sizeof(ee_cfg.port) - 1] = '\0';
-    if (strlen(server_port_str) != 4) {                /* cpi r16,0x04 @0x7cd2 */
-        lcd_puts_P(PSTR("PORT MEM LEN ERROR"));        /* @0x7cde              */
-        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));  /* @0x7cec "3506" */
-    } else if (atoi(server_port_str) == 0) {           /* atoi + cpi 0 @0x7d3e */
-        lcd_puts_P(PSTR("PORT MEM VAL ERROR"));        /* 0xc28c               */
-        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));
-    } else {
-        lcd_puts_P(PSTR("PORT MEM OK"));               /* 0xc280               */
-    }
-    server_port = (uint16_t)atoi(server_port_str);
+    dst[i] = '\0';
 }
 
-/* Zapis nowego adresu serwera (SMS "NEW*ADR="). */
+/* @0x2036 — zapis napisu do EEPROM razem z koncowym NUL. */
+static void ee_write_str(void *ee, const char *s)
+{
+    uint8_t *a = (uint8_t *)ee;
+    do { eeprom_update_byte(a++, (uint8_t)*s); } while (*s++);
+}
+
+/* @0xb498 — XOR wszystkich bajtow napisu (suma kontrolna portu/hosta). */
+static uint8_t str_xor(const char *s)
+{
+    uint8_t x = 0;
+    while (*s) x ^= (uint8_t)*s++;
+    return x;
+}
+
+/* --- port (0x01 + XOR @0x07): zapis @0x1532, odczyt @0x15e0 ------------------ */
+static void config_save_port(const char *port)
+{
+    ee_write_str(ee_cfg.port, port);
+    eeprom_update_byte(&ee_cfg.port_xor, str_xor(port));
+}
+static void config_load_port(void)
+{
+    ee_read_str(ee_cfg.port, server_port_str, sizeof(server_port_str));
+    /* pusto albo zla suma XOR -> domyslny "3506" i zapis z powrotem */
+    if (server_port_str[0] == '\0' ||
+        eeprom_read_byte(&ee_cfg.port_xor) != str_xor(server_port_str)) {
+        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));
+        config_save_port(server_port_str);
+    }
+}
+
+/* --- host (0x0A + XOR @0x2F): zapis @0x1698, odczyt @0x1746 ------------------ */
 static void config_save_host(const char *host)
 {
     lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));              /* 0xbbaa               */
-    eeprom_update_block(host, ee_cfg.host, sizeof(ee_cfg.host));
+    ee_write_str(ee_cfg.host, host);
+    eeprom_update_byte(&ee_cfg.host_xor, str_xor(host));
     lcd_puts_P(PSTR("Zapisano w pamieci "));           /* 0xbd44               */
 }
-
-/* Inkrementacja 6-cyfrowego licznika sesji w EEPROM ("000001" -> ...). */
-static void config_bump_counter(void)
+static void config_load_host(void)
 {
-    char c[7];
-    uint32_t n;
-    eeprom_read_block(c, ee_cfg.counter, 6); c[6] = '\0';
-    n = strtoul(c, NULL, 10) + 1;
-    /* sformatuj z wiodacymi zerami na 6 cyfr */
-    for (int i = 5; i >= 0; i--) { c[i] = '0' + (n % 10); n /= 10; }
-    eeprom_update_block(c, ee_cfg.counter, 6);
+    ee_read_str(ee_cfg.host, server_host, sizeof(server_host));
+    if (server_host[0] == '\0' ||
+        eeprom_read_byte(&ee_cfg.host_xor) != str_xor(server_host)) {
+        strcpy_P(server_host, PSTR(SERVER_DEFAULT));   /* lgps01...            */
+        config_save_host(server_host);
+    }
+}
+
+/* --- stan ruchu (0x3C): zapis @0x17fe, odczyt @0x186c ------------------------ */
+static void config_save_motion(const char *st)         /* "R" albo "P"         */
+{
+    ee_write_str(ee_cfg.motion, st);
+    /* obraz kopiuje tez do pamieci I2C: 0xe42(bank 0x7E, adr 0x08)           */
+}
+static void config_load_motion(void)
+{
+    ee_read_str(ee_cfg.motion, motion_state, 2);       /* bierzemy 1. znak     */
+    if (motion_state[0] != 'R' && motion_state[0] != 'P') {
+        strcpy_P(motion_state, PSTR("R"));             /* domyslnie RUCH       */
+        config_save_motion(motion_state);
+    }
+}
+
+/* --- indeks operatora roamingowego (0x3F): zapis @0x193a, odczyt @0x198c ----- */
+static void config_save_roam_op(uint8_t idx)
+{
+    char b[4];
+    utoa(idx, b, 10);
+    ee_write_str(ee_cfg.roam_op_idx, b);
+}
+static uint8_t config_load_roam_op(void)
+{
+    char b[4];
+    ee_read_str(ee_cfg.roam_op_idx, b, sizeof(b));
+    return b[0] ? (uint8_t)atoi(b) : 1;                /* puste -> 1           */
+}
+
+/* --- kod przyczyny ostatniego restartu (0x42 PL / 0x67 inne): @0x19ee ------- */
+static void config_save_reset_code(uint8_t code)
+{
+    char b[4];
+    b[0] = '0' + (code / 100) % 10;                    /* 3 cyfry, np. "021"   */
+    b[1] = '0' + (code / 10) % 10;
+    b[2] = '0' + code % 10;
+    b[3] = '\0';
+    if (strcmp_P(net_mcc, PSTR("260")) == 0)           /* siec w Polsce        */
+        ee_write_str(ee_cfg.reset_code_home, b);
+    else                                               /* za granica / nieznana*/
+        ee_write_str(ee_cfg.reset_code_abroad, b);
+}
+/* @0x1aaa — "kodPL/kodInne" do ekranu startowego ("er=") i ramki FORM ("Er=") */
+static void config_load_reset_codes(char *out)         /* np. "021/020"        */
+{
+    char b[4];
+    ee_read_str(ee_cfg.reset_code_home, b, sizeof(b));
+    strcpy(out, b[0] ? b : "000");
+    strcat_P(out, PSTR("/"));
+    ee_read_str(ee_cfg.reset_code_abroad, b, sizeof(b));
+    strcat(out, b[0] ? b : "000");
+}
+
+/* --- licznik restartow bez udanej lacznosci (0x5A): @0x1b72 / @0x1c5e ------- */
+static void config_save_restart_count(void)
+{
+    char b[7];
+    uint16_t n = restart_count;
+    for (int8_t i = 5; i >= 0; i--) { b[i] = '0' + n % 10; n /= 10; }
+    b[6] = '\0';
+    ee_write_str(ee_cfg.restart_count, b);             /* np. "000001"         */
+    /* obraz kopiuje tez do pamieci I2C (0xe42)                                 */
+}
+static void config_load_restart_count(void)
+{
+    char b[7];
+    ee_read_str(ee_cfg.restart_count, b, sizeof(b));
+    if (b[0] == '\0') { restart_count = 0; config_save_restart_count(); }
+    else restart_count = (uint16_t)atoi(b);
+}
+
+/* --- tryb roamingu (0x64, "RoamingPam="): zapis @0x1dac, odczyt @0x1dfe ----- *
+ * Dozwolone '0'..'7', inaczej domyslne 3. Gdy siec != 260 i tryb == 0,
+ * firmware wypisuje "ZAKAZ ROAMINGU" (@0x668e). Znaczenie wartosci 1..7
+ * nie zostalo ustalone.                                                       */
+static void config_save_roaming_mode(uint8_t m)
+{
+    char b[2] = { (char)('0' + (m & 7)), '\0' };
+    ee_write_str(ee_cfg.roaming_mode, b);
+}
+static void config_load_roaming_mode(void)
+{
+    char b[3];
+    ee_read_str(ee_cfg.roaming_mode, b, sizeof(b));
+    if (b[0] >= '0' && b[0] <= '7' && b[1] == '\0') {
+        roaming_mode = (uint8_t)(b[0] - '0');
+    } else {
+        roaming_mode = 3;                              /* @0x1e46 ldi r24,3    */
+        config_save_roaming_mode(roaming_mode);
+    }
+}
+
+/* Wczytanie calej konfiguracji przy starcie. */
+static void config_load(void)
+{
+    config_load_host();
+    config_load_port();
+    server_port = (uint16_t)atoi(server_port_str);
+    config_load_motion();
+    roam_op_idx = config_load_roam_op();
+    config_load_restart_count();
+    config_load_roaming_mode();
+}
+
+/* Restart z kodem przyczyny — procedura @0x2a28 / @0x7e00:
+ * zapisz stan ruchu i licznik restartow, zapisz kod przyczyny,
+ * "RESET ZA 7 sek." (@0x7dde), potem reset przez watchdog.
+ * Kody znalezione w obrazie (wybrane): 20 = modem nie odpowiada (AT+CSQ),
+ * 21 = blad AT+CIICR (GPRS), 22 = blad AT+CIPHEAD, 23 = zakaz roamingu,
+ * 27 = komenda RESET z SMS, 29 = blad HSK, 36 = IMEI/PIN.                     */
+static void restart_with_reason(uint8_t code)
+{
+    config_save_motion(motion_state);
+    restart_count++;                                   /* @0x2a66 (0xaa14)     */
+    config_save_restart_count();
+    lcd_puts_P(PSTR("RESTART"));
+    config_save_reset_code(code);
+    lcd_puts_P(PSTR("RESET ZA 7 sek. "));
+    wdt_enable(WDTO_120MS);                            /* WDTCR=0x1B @0x7e34   */
+    for (;;) ;
+}
+
+/* Odpowiedz "OK" od serwera: zeruj licznik restartow i kod przyczyny. */
+static void config_server_ok(void)
+{
+    restart_count = 0;                                 /* @0x414c              */
+    config_save_restart_count();
+    config_save_reset_code(0);                         /* @0x253c 0x19ee(0)    */
 }
 
 /* --------------------------------------------------------------------------
  *  Bufor rekordow "OLD" na czas braku zasiegu.
- *  UWAGA: w zrzucie EEPROM nie ma rekordow pozycji (obszar poza konfiguracja
- *  jest skasowany 0xFF) — kolejka byla pusta albo rekordy sa buforowane w RAM.
- *  Modelujemy ja w RAM (ulotna); logika wysylki jak w obrazie ("LOO").
- * -------------------------------------------------------------------------- */
+ *  W obrazie rekordy trafiaja najpewniej do zewnetrznej pamieci I2C
+ *  (0xe42/0xfa6: bank + adres, "ZAPIS DO PAMIECI" / "ODCZYT Z PAMIECI").
+ *  Warstwa I2C nie jest tu odtworzona — kolejka modelowana w RAM (ulotna).
+ -------------------------------------------------------------------------- */
 #define OLD_SLOTS  8
 #define OLD_SIZE   48
 static char    old_q[OLD_SLOTS][OLD_SIZE];
@@ -718,8 +899,11 @@ static void build_frame(char *out)
     char num[12];
 
     strcpy_P(out, PSTR("FORM;"));          /* @0x23d0                        */
-    strcat_P(out, PSTR("Er="));            /* @0x23e0  kod bledu/statusu     */
-    /* strcat(out, err_str);  (RAM 0xbc2a) */
+    strcat_P(out, PSTR("Er="));            /* @0x23e0                        */
+    {   char codes[8];                     /* @0x2372 -> 0x1aaa: "021/020"   */
+        config_load_reset_codes(codes);    /* kody przyczyn restartu PL/inne */
+        strcat(out, codes);
+    }
     strcat_P(out, PSTR(";A=1 "));          /* @0x2400  aktywny               */
     strcat_P(out, PSTR("CAN=1 "));         /* @0x2410  obecnosc CAN          */
 
@@ -872,19 +1056,11 @@ static void server_get_config(void)
     get_field(r, 63, 1, f); cfg.p_c23 = atoi(f);
 
     /* blokada roamingu wynika z konfiguracji ("RoamingPam=" 0xbdae)           */
-    roaming_block = cfg.flag05;
+    /* Tryb roamingu: obsluga CONFIG zapisuje go pod EEPROM 0x64 i wypisuje
+     * "RoamingPam=<n>" (@0x37e4). Offset pola w odpowiedzi nie jest ustalony,
+     * dlatego tutaj go nie przypisujemy.                                     */
 
     /* przy bledzie formatu: "-CONFIG-ERROR " (0xbdba); sukces -> zapis EEPROM  */
-}
-
-/* ========================================================================== */
-/*  [REC]  Reset programowy (@0xc318 "RESET*", 0xc2bc "RESET ZA 7 sek.")       */
-/* ========================================================================== */
-static void reset_mcu(void)
-{
-    lcd_puts_P(PSTR("RESTART"));
-    wdt_enable(WDTO_15MS);                 /* reset przez watchdog              */
-    for (;;) ;
 }
 
 /* ========================================================================== */
@@ -895,12 +1071,17 @@ int main(void)
     uint8_t state = ST_MODEM_INIT;
 
     hw_init();                             /* @0x8c  [HW] */
-    config_load();                         /* wczytaj host/ID/licznik z EEPROM  */
-    config_bump_counter();                 /* nowa sesja -> licznik++           */
+    config_load();                         /* host, port, stan, liczniki z EEPROM */
     gps_config();                          /* PMTK: wybor zdan NMEA */
-    lcd_clear_home();
-    lcd_puts_P(PSTR("SIM900"));
-    lcd_puts_P(PSTR("ver="));            /* "2.65" */
+    lcd_clear_home();                      /* ekran startowy @0x03be:           */
+    lcd_puts_P(PSTR("SIM900"));            /* "SIM900 ver=2.65 er=021/020"      */
+    lcd_puts_P(PSTR(" ver="));
+    lcd_puts_P(PSTR(FW_VERSION));
+    {   char codes[8];
+        config_load_reset_codes(codes);    /* kody przyczyn ostatnich restartow */
+        lcd_puts_P(PSTR(" er="));
+        lcd_puts(codes);
+    }
 
     for (;;) {                             /* glowna petla @0x2c2 */
         wdt_reset();
@@ -947,6 +1128,9 @@ int main(void)
                 build_frame(frame);
                 if (csq /* zasieg ok */) {
                     sim900_tcp_send(frame);          /* "-- WYSYLAM DANE ---" */
+                    while (line_ready) nmea_poll();  /* odbierz odpowiedz      */
+                    if (strcmp_P(last_reply, PSTR("OK")) == 0)
+                        config_server_ok();          /* @0x2522 / @0x414c      */
                 } else {
                     mem_store_record(frame);         /* "ZAPIS DO PAMIECI"    */
                     lcd_puts_P(PSTR("NET PROBLEM"));
@@ -977,7 +1161,8 @@ int main(void)
  *  - GSM: pelny ciag komend AT (CSQ, GSN, CREG, CENG, CSTT/CIICR/CIFSR,
  *         CIPSTART/CIPSEND) -> sesja TCP do lXX.monitoring-gps.net.
  *  - Protokol tekstowy: ramki PNG/FORM/HSK/LOK/LOO/CONFIG z polami stanu.
- *  - EEPROM I2C: kolejka rekordow "OLD" na czas braku zasiegu.
+ *  - EEPROM wewn.: konfiguracja (host/port + XOR, liczniki, kody restartu).
+ *  - pamiec I2C (programowe I2C PD0/PD1): rekordy "OLD" na czas braku zasiegu.
  *  - CAN: odczyt paliwa (SONDA1), RPM, pedalu; usrednianie poziomu paliwa.
  *  - SMS: zdalne komendy RESET i zmiana adresu serwera (NEW*ADR=).
  *  - Kontrola roamingu (AT+COPS), watchdog, reset programowy.

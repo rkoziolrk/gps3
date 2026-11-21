@@ -21,7 +21,7 @@ GPRS do serwera `*.monitoring-gps.net` i czyta dane z magistrali CAN
 | USART0    | GPS, **9600 8N1**                                                 |
 | USART1    | SIM900, **9600 8N1** (ISR RX składa linie CR/LF)                 |
 | CAN       | czujnik paliwa (SONDA1), RPM, pedał                              |
-| Pamięć    | **wewnętrzny EEPROM** ATmega64 — kolejka rekordów „OLD"           |
+| Pamięć    | wewnętrzny EEPROM (konfiguracja) + zewnętrzna pamięć na programowym I2C (PD0/PD1) |
 | Wyświetlacz| LCD **HD44780** 4-bit na PORTC (status urządzenia)              |
 | CAN źródło| dane z **zewnętrznego** modułu (brama CAN→szeregowa), parsowane  |
 

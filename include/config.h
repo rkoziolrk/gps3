@@ -37,8 +37,10 @@
 #define LCD_RS_BIT     PC4
 #define LCD_E_BIT      PC5
 
-/* --- Pamiec rekordow: wewnetrzny EEPROM ATmega64 (<avr/eeprom.h>) --------- *
- * NIE I2C/SPI — dostep przez EEARL/EEARH/EEDR/EECR (patrz docs/MEMORY_MAP.md) */
+/* --- Pamiec: wewnetrzny EEPROM ATmega64 (konfiguracja, docs/EEPROM.md) ---- *
+ * oraz zewnetrzna pamiec na programowym I2C: PD0 = SCL, PD1 = SDA.          */
+#define I2C_SCL_BIT    PD0
+#define I2C_SDA_BIT    PD1
 
 /* --- CAN: dane z zewnetrznego modulu (brama CAN->szeregowa), parsowane ---- *
  * w RAM; ATmega64 nie ma kontrolera CAN.                                     */

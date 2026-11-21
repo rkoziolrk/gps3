@@ -42,6 +42,7 @@ Pozostałe wektory → `reti` (nieużywane).
 | DDRC           | .0–.5   | LCD HD44780 4-bit: PC0–3=D4–7, PC4=RS, PC5=E    |
 | EEARL/EEARH    | —       | wewnętrzny EEPROM AVR (zapis @0xb810)           |
 | EEDR           | —       | dane EEPROM (zapis @0xb82a)                     |
+| DDRD/PIND .0,.1| —       | programowe I2C: PD0=SCL, PD1=SDA (@0xb9c6..)    |
 
 ## Kluczowe adresy RAM (z deasemblera)
 
@@ -70,3 +71,9 @@ Pozostałe wektory → `reti` (nieużywane).
 | 0xAC72  | 71      | `_delay_ms`          |
 | 0xAE98  | 32      | `__mulhi3` (libgcc)  |
 | 0xB25C  | —       | `__lpm` (libgcc)     |
+
+## Funkcje EEPROM (poprawka)
+
+Funkcje `0x186c` i `0x1c5e` to odczyt pól EEPROM `0x3C` i `0x5A`, a nie
+parsery NMEA. Parsowanie NMEA (RMC/GGA/VTG) jest w funkcji od `0x4b20`.
+Pełna mapa pól: `docs/EEPROM.md`.
