@@ -5,3 +5,7 @@ build/
 *.hex
 *.lss
 *.map
+
+# Python
+__pycache__/
+*.pyc
