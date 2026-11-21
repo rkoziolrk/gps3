@@ -20,23 +20,39 @@ Protokół tekstowy, znaki `;` jako separatory. Rodzaje ramek:
 Pola stanu spotykane w ramkach: `A=1` (aktywny), `R=3/`, `DP=0`, `OD=0`,
 `DS=01`, `MEM=`, `SD=1 SN=0`, `WY=1`, `GG=1`, `LOGUJ-;`, `AUTO--;`.
 
-### Budowa ramki `FORM;` (sekwencja @0x23cc..0x25e6)
-
-Sklejana po kolei (`strcpy_P`/`strcat` + `itoa`):
+### Ramki potwierdzone logiem z urządzenia
 
 ```
-FORM; Er=<status> ;A=1 CAN=1 R=3/<n>  DP=0 OD=0 DS=01 MEM=<bank>:<adr>
- SD=1 SN=0 WY=1 GG=1 LOGUJ-;<dane_pozycji>;@
+HSK-02;<IMEI>;2.65;ORANGE;MT02-51083;SIM900;FGP;260;03;0;0;PA6C;1;TEMP;R26;B13
+PNG-01;<IMEI>;CAN;25;FORM;Er=012/016;A=1 CAN=1 R=3/2 DP=0 OD=0 DS=01 MEM=0:0 SD=1 SN=0WY=1 GG=1
 ```
 
-Dynamiczne pola: `R=3/<n>` (licznik rekordu, wartość z @0x1dfe),
-`MEM=<bank>:<adr>` (stan pamięci EEPROM), oraz treść po `LOGUJ-;`
-(sparsowane pola GPS z bufora 0x0B42). Pozostałe (`DP/OD/DS/SD/SN/WY/GG`)
-w tym buildzie są w większości stałe.
+- `HSK-02` — handshake: IMEI, wersja `2.65`, operator, model `MT02-51083`,
+  modem, `FGP`, MCC;MNC sieci (`260;03` = Orange PL), typ GPS `PA6C`.
+  Pola `0;0`, `1;TEMP` i `R26;B13` — znaczenie nieustalone.
+- `PNG-01` — ramka okresowa (@0x2372..0x24fe): IMEI, `CAN;<licznik>`
+  (RAM 0x0BE9), potem część `FORM;`: `Er=<kod PL>/<kod inne>` (kody przyczyn
+  restartu, `docs/EEPROM.md`), `R=3/<tryb roamingu>`, `MEM=<bank>:<adr>`
+  oraz stałe pola stanu. Brak spacji w `SN=0WY=1` jest zgodny z firmware.
 
-Handshake (`HSK-02;`) dokleja m.in.: `;2.65;ORANGE;` (wersja + operator),
-`;SIM900;FGP`, `;PA6C`, `;1;TEMP;`. Odpowiedzi serwera:
-`- ADRESY OK -`, `- NOWE ADRESY -`, `- HSK PROBLEM -5s -`, `-CONFIG-ERROR`.
+## Połączenie TCP (SIM900)
+
+Sekwencja z logu:
+
+```
+AT+CSTT="internet","internet","internet"   -> OK
+AT+CIICR                                   -> OK
+AT+CIFSR                                   -> <adres IP z sieci operatora>
+AT+CIPHEAD=1                               -> OK
+AT+CIPSTART="TCP","<host>","<port>"        -> OK   (przyjęcie komendy)
+                                              CONNECT OK / CONNECT FAIL  (wynik, przychodzi później)
+AT+CIPSEND                                 -> ">"  (gdy połączenie jest) albo ERROR
+```
+
+`OK` po `AT+CIPSTART` oznacza tylko przyjęcie komendy; o nawiązaniu
+połączenia świadczy dopiero `CONNECT OK`. Firmware wysyła `AT+CIPSEND`
+ok. 9 s po `CIPSTART` i ponawia 3 razy co ok. 2,5 s. Z `AT+CIPHEAD=1`
+dane przychodzące od serwera modem poprzedza nagłówkiem `+IPD,<długość>:`.
 
 ## Komendy AT (SIM900)
 

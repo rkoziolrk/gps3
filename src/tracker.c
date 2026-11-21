@@ -124,7 +124,8 @@ enum tracker_state {
  *   @0x0C46       bufor roboczy do skladania i wypisywania napisow (trace)
  */
 static char  modem_ver[8];        /* "2.65" z AT+CGMR / "ver="               */
-static char  imei[16];            /* z AT+GSN  ("IMEI>")                      */
+static char  imei[16];            /* z AT+GSN  ("IMEI>"), RAM 0x0B42          */
+static uint16_t can_counter;      /* RAM 0x0BE9, pole po ";CAN;" w ramce PNG  */
 static char  apn[16]       = "internet";
 static char  server_host[40];     /* "lXX.monitoring-gps.net"                */
 static char     server_port_str[5]; /* port TCP serwera, np. "3506" (EEPROM 0x01) */
@@ -449,11 +450,15 @@ static uint8_t sim900_power_on(void)
 /* Nawiazanie sesji GPRS (@strings 0xc07a..0xc0ba) */
 static uint8_t sim900_gprs_attach(void)
 {
-    char cmd[32];
+    char cmd[48];
     sim900_cmd("AT+CIPMUX=0");             /* 0xc07a pojedyncze polaczenie      */
     sim900_cmd("AT+CGATT=1");              /* 0xc086 podlaczenie do GPRS        */
-    strcpy(cmd, "AT+CSTT=");               /* 0xc092 */
-    strcat(cmd, apn);                      /* 0xc09c "internet"                 */
+    /* APN, uzytkownik i haslo — w logu: AT+CSTT="internet","internet","internet"
+     * (@0x6006..0x60a6: trzy razy "internet")                                   */
+    strcpy_P(cmd, PSTR("AT+CSTT=\""));
+    strcat(cmd, apn); strcat_P(cmd, PSTR("\",\""));
+    strcat(cmd, apn); strcat_P(cmd, PSTR("\",\""));
+    strcat(cmd, apn); strcat_P(cmd, PSTR("\""));
     sim900_cmd(cmd);
     sim900_cmd("AT+CIICR");                /* 0xc0a6 podniesienie laczna        */
     sim900_cmd("AT+CIFSR");                /* 0xc0b0 lokalny IP                 */
@@ -649,14 +654,15 @@ static uint8_t sim900_tcp_open(void)
 {
     char cmd[80];
     /* Skladanie jak w obrazie @0x3d34..0x3dd4:
-     *   "AT+CIPSTART=" + "TCP" + "," + host + "," + port
+     *   AT+CIPSTART="TCP","host","port"  (cudzyslowy potwierdzone logiem)
      * host i port pochodza z EEPROM (po walidacji w config_load).              */
-    strcpy_P(cmd, PSTR("AT+CIPSTART="));   /* @0x3d34 */
+    strcpy_P(cmd, PSTR("AT+CIPSTART=\""));  /* @0x3d34 */
     strcat_P(cmd, PSTR("TCP"));            /* @0x3d54 */
-    strcat_P(cmd, PSTR(","));              /* @0x3d74 */
+    strcat_P(cmd, PSTR("\",\""));          /* @0x3d74 */
     strcat(cmd, server_host);              /* @0x3d94  np. lgps03.monitoring-gps.net */
-    strcat_P(cmd, PSTR(","));              /* @0x3db4 */
+    strcat_P(cmd, PSTR("\",\""));          /* @0x3db4 */
     strcat(cmd, server_port_str);          /* @0x3dd4  np. "3506"               */
+    strcat_P(cmd, PSTR("\""));
     sim900_cmd(cmd);                       /* oczekiwanie na CONNECT OK         */
     return 1;
 }
@@ -1065,56 +1071,61 @@ static void build_frame(char *out)
 {
     char num[12];
 
-    strcpy_P(out, PSTR("FORM;"));          /* @0x23d0                        */
+    /* Naglowek @0x2372..0x23c8 — potwierdzony logiem:
+     *   PNG-01;<IMEI>;CAN;<n>;FORM;Er=012/016;A=1 CAN=1 R=3/2 DP=0 OD=0
+     *   DS=01 MEM=0:0 SD=1 SN=0WY=1 GG=1                                   */
+    strcpy_P(out, PSTR("PNG-01;"));        /* @0x2380                        */
+    strcat(out, imei);                     /* RAM 0x0B42 (z AT+GSN)          */
+    strcat_P(out, PSTR(";CAN;"));          /* @0x23a0                        */
+    utoa(can_counter, num, 10);            /* RAM 0x0BE9, w logu 25          */
+    strcat(out, num);
+    strcat_P(out, PSTR(";"));
+    strcat_P(out, PSTR("FORM;"));          /* @0x23d0                        */
     strcat_P(out, PSTR("Er="));            /* @0x23e0                        */
-    {   char codes[8];                     /* @0x2372 -> 0x1aaa: "021/020"   */
+    {   char codes[8];                     /* @0x1aaa: "012/016"             */
         config_load_reset_codes(codes);    /* kody przyczyn restartu PL/inne */
         strcat(out, codes);
     }
-    strcat_P(out, PSTR(";A=1 "));          /* @0x2400  aktywny               */
-    strcat_P(out, PSTR("CAN=1 "));         /* @0x2410  obecnosc CAN          */
-
-    strcat_P(out, PSTR("R=3/"));           /* @0x2420  licznik rekordu       */
-    ltoa(/*wynik func @0x1dfe*/ 0, num, 10);
-    strcat(out, num);                      /* @0x243e                        */
-    strcat_P(out, PSTR(" "));              /* @0x244e                        */
-
+    strcat_P(out, PSTR(";A=1 "));          /* @0x2400                        */
+    strcat_P(out, PSTR("CAN=1 "));         /* @0x2410                        */
+    strcat_P(out, PSTR("R=3/"));           /* @0x2420                        */
+    utoa(roaming_mode, num, 10);           /* @0x242c 0x1dfe = tryb roamingu */
+    strcat(out, num);
+    strcat_P(out, PSTR(" "));
     strcat_P(out, PSTR("DP=0 "));          /* @0x245e                        */
     strcat_P(out, PSTR("OD=0 "));          /* @0x246e                        */
     strcat_P(out, PSTR("DS=01 "));         /* @0x247e                        */
-
-    strcat_P(out, PSTR("MEM="));           /* @0x248e  stan pamieci          */
-    ltoa(0 /*bank*/, num, 10); strcat(out, num);   /* @0x249e               */
-    strcat_P(out, PSTR(":"));              /* @0x24ae                        */
-    ltoa(0 /*adres*/, num, 10); strcat(out, num);  /* @0x24be               */
-    strcat_P(out, PSTR(" "));              /* @0x24ce                        */
-
-    strcat_P(out, PSTR("SD=1 SN=0"));      /* @0x24de                        */
-    strcat_P(out, PSTR("WY=1 "));          /* @0x24ee  flaga wyslania        */
-    strcat_P(out, PSTR("GG=1"));           /* @0x24fe  jakosc GPS            */
-
-    /* czesc danych pozycji/logu (po @0x2588):                               */
-    strcat_P(out, PSTR("LOGUJ-;"));        /* @0x2588                        */
-    /* strcat(out, pozycja_z_bufora);      (RAM 0x0b42 — sparsowane pola GPS)*/
-    strcat_P(out, PSTR(";"));              /* @0x25a8                        */
-    strcat_P(out, PSTR("@"));              /* @0x25c8  terminator rekordu    */
-
-    /* [REC] pola DP/OD/DS/SD/SN/WY/GG w tym buildzie sa w wiekszosci stale;
-     *       dynamiczne sa: R=3/<n>, MEM=<bank>:<adr> oraz tresc po LOGUJ-;.
-     *       Wartosci pozycji pochodza ze struktury 'fix' (UTC/LAT/LON/...).  */
+    strcat_P(out, PSTR("MEM="));           /* @0x248e  bank:adres pamieci I2C*/
+    utoa(0, num, 10); strcat(out, num);
+    strcat_P(out, PSTR(":"));
+    utoa(0, num, 10); strcat(out, num);
+    strcat_P(out, PSTR(" "));
+    strcat_P(out, PSTR("SD=1 SN=0"));      /* @0x24de  (bez spacji, jak w logu)*/
+    strcat_P(out, PSTR("WY=1 "));          /* @0x24ee                        */
+    strcat_P(out, PSTR("GG=1"));           /* @0x24fe  koniec ramki          */
+    /* Dalej w tej samej funkcji (@0x2588) jest osobna ramka "LOGUJ-;...@",
+     * wysylana w innej galezi — nie jest czescia tej linii.                  */
 }
 
 /* Handshake z serwerem (@0x... ST_HSK). Przy bledzie: "-HSK-ERROR", po 5s retry */
 static uint8_t server_handshake(void)
 {
-    char frame[96];
-    strcpy(frame, "HSK-02;");
-    strcat(frame, ";2.65;ORANGE;");        /* wersja + operator                 */
-    strcat(frame, ";SIM900;FGP");          /* typ modemu                        */
-    strcat(frame, ";PA6C");                /* typ GPS                           */
-    strcat(frame, ";1;TEMP;");
+    /* Format potwierdzony logiem:
+     *   HSK-02;<IMEI>;2.65;ORANGE;MT02-51083;SIM900;FGP;260;03;0;0;PA6C;1;TEMP;R26;B13
+     * Stale "MT02-", "51083", ";SIM900;FGP", ";PA6C", ";1;TEMP;" sa we flashu.
+     * 260;03 = MCC;MNC sieci. Pola 0;0 oraz R26;B13 — znaczenie nieustalone.   */
+    char frame[112];
+    strcpy_P(frame, PSTR("HSK-02;"));
+    strcat(frame, imei);
+    strcat_P(frame, PSTR(";2.65;ORANGE;"));
+    strcat_P(frame, PSTR("MT02-51083"));
+    strcat_P(frame, PSTR(";SIM900;FGP;"));
+    strcat(frame, net_mcc);
+    strcat_P(frame, PSTR(";03;0;0"));      /* MNC + dwa pola nieustalone      */
+    strcat_P(frame, PSTR(";PA6C"));
+    strcat_P(frame, PSTR(";1;TEMP;"));
+    strcat_P(frame, PSTR("R26;B13"));      /* nieustalone                     */
     sim900_tcp_send(frame);
-    /* oczekiwanie odpowiedzi: "- ADRESY OK -" / "- NOWE ADRESY -" / "- HSK PROBLEM -5s -" */
     return 1;
 }
 
