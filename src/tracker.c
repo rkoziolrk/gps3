@@ -133,11 +133,13 @@ static uint8_t  csq;              /* sila sygnalu z AT+CSQ                    */
 static char     net_mcc[4];       /* 0x0B6D  MCC biezacej sieci, "260" = PL   */
 static uint8_t  roaming_mode = 3; /* tryb roamingu z EEPROM 0x64 (0..7)       */
 static uint8_t  roam_op_idx = 1;  /* 0x0C3B  indeks operatora (EEPROM 0x3F)   */
-static char     last_reply[16];   /* ostatnia linia odpowiedzi (nie-NMEA)     */
+static char     last_reply[80];   /* ostatnia linia odpowiedzi (nie-NMEA)     */
 
 /* Prototypy funkcji zdefiniowanych nizej. */
 static void restart_with_reason(uint8_t code);
 static void config_save_roam_op(uint8_t idx);
+static uint8_t config_load_roam_op(void);
+static void sms_poll(void);
 static void config_save_host(const char *host);
 
 /* Pozycja GPS po sparsowaniu RMC/GGA/VTG */
@@ -460,31 +462,186 @@ static uint8_t sim900_gprs_attach(void)
 }
 
 /* Blokada/zezwolenie roamingu (@0xc0dc "ZAKAZ ROAMINGU", 0xc210/0xc21e COPS) */
-/* Roaming (@0x6480..0x7600):
- *  - siec 260 (Polska)               -> nic nie robimy ("KRAJ")
- *  - za granica i tryb (EEPROM 0x64) == 0 -> "ZAKAZ ROAMINGU", restart kod 23
- *  - za granica, tryb != 0           -> reczny wybor operatora z tabeli
- *    preferowanych sieci (MCC -> lista MNC, @0x6f00..0x7180; m.in. 262, 278,
- *    242, 268, 226, 231, 293, 240, 216, 234, 222) przez AT+COPS=1,2,<MCCMNC>;
- *    przy braku OK fallback AT+COPS=4,2,... (reczny z powrotem do automatu).
- *    Indeks probowanego operatora (EEPROM 0x3F) rotuje; po 4 probach -> 1.
- *  Tabela MNC nie jest tu przepisana — ponizej tylko logika wyboru.           */
+/* ==========================================================================
+ *  [REC]  Roaming — funkcja @0x673a, wolana w kazdym obiegu petli (@0x40d2)
+ * ==========================================================================
+ *  MCC kraju pochodzi z AT+CENG? (tryb inzynierski SIM900, @0x634c):
+ *    +CENG: <cell>,"<arfcn>,<rxl>,<rxq>,<mcc>,<mnc>,<bsic>,<cellid>,..."
+ *  Wybor sieci przez AT+COPS (SIM900 / 3GPP 27.007):
+ *    AT+COPS=1,2,"MCCMNC"  wybor reczny (format 2 = numeryczny)
+ *    AT+COPS=4,2,"MCCMNC"  wybor reczny, przy porazce modem wraca do automatu
+ *
+ *  Tryb roamingu (EEPROM 0x64, "RoamingPam") — wartosci firmware, nie SIM900:
+ *    0    roaming zabroniony: "ZAKAZ ROAMINGU", restart z kodem 23
+ *    1    kraje G_EU + Szwajcaria
+ *    2    kraje G_EU + Szwajcaria + G_EXT; Rosja bez wymuszania operatora
+ *    3-7  tylko kraje G_EU (3 = domyslny)
+ *  Wybor operatora z listy preferowanych dla kraju:
+ *    <4   start od operatora zapamietanego w EEPROM 0x3F (rotacja)
+ *    >=4  zawsze od pierwszego operatora
+ *    >=5  probowany tylko pierwszy operator
+ *    <6   po kolei AT+COPS=1,2 az do OK; gdy zaden — AT+COPS=4,2 (ostatni)
+ *    6    od razu AT+COPS=4,2 z pierwszym operatorem
+ *    7    bez AT+COPS — modem wybiera siec sam
+ *  Kraj spoza dozwolonych: "ZAKAZ - <MCC>-n/10-", co 60 s sprawdzanie SMS,
+ *  po 11 probach (~11 min) restart z kodem 25.
+ *
+ *  Tabela (@0x68ce..0x717c) przepisana 1:1 z obrazu. Lista MNC konczy sie na
+ *  pierwszym "00" (petla @0x7250); dla Slowacji (231) kod "02" stoi za "00",
+ *  wiec firmware nigdy go nie probuje — tak jest w oryginale.               */
+
+enum { G_EU, G_CH, G_EXT, G_AUTO };
+typedef struct { char mcc[4]; uint8_t grp; char mnc[18]; } roam_t;
+static const roam_t roam_tab[] PROGMEM = {
+    { "228", G_CH,  "07,03,02,01" },  /* Szwajcaria */
+    { "257", G_EXT, "04,01,02" },  /* Bialorus */
+    { "250", G_AUTO, "" },  /* Rosja */
+    { "255", G_EXT, "06,05,03,01,07" },  /* Ukraina */
+    { "259", G_EXT, "02,01,05" },  /* Moldawia */
+    { "220", G_EXT, "05,03,01" },  /* Serbia */
+    { "218", G_EXT, "03,90,05" },  /* Bosnia i Hercegowina */
+    { "276", G_EXT, "01,04,02" },  /* Albania */
+    { "294", G_EXT, "02,01,03" },  /* Macedonia Pln. */
+    { "286", G_EXT, "03,04,01,02" },  /* Turcja */
+    { "232", G_EU,  "05,03,01" },  /* Austria */
+    { "206", G_EU,  "20,01,10" },  /* Belgia */
+    { "284", G_EU,  "03,05,01" },  /* Bulgaria */
+    { "280", G_EU,  "01" },  /* Cypr */
+    { "230", G_EU,  "02,01,03" },  /* Czechy */
+    { "219", G_EU,  "01,02,10" },  /* Chorwacja */
+    { "238", G_EU,  "06,01,02" },  /* Dania */
+    { "248", G_EU,  "01,02,03" },  /* Estonia */
+    { "244", G_EU,  "14,12,05,91" },  /* Finlandia */
+    { "208", G_EU,  "01,20,15" },  /* Francja */
+    { "202", G_EU,  "01,05,10" },  /* Grecja */
+    { "214", G_EU,  "03,05,07,01,04" },  /* Hiszpania */
+    { "204", G_EU,  "08,20,16,04" },  /* Holandia */
+    { "272", G_EU,  "05,03,02" },  /* Irlandia */
+    { "274", G_EU,  "11,02,01" },  /* Islandia */
+    { "246", G_EU,  "02,01,03" },  /* Litwa */
+    { "270", G_EU,  "99,01,77" },  /* Luksemburg */
+    { "247", G_EU,  "05,01,02" },  /* Lotwa */
+    { "278", G_EU,  "21,01" },  /* Malta */
+    { "262", G_EU,  "03,07,02" },  /* Niemcy */
+    { "242", G_EU,  "02,05,01" },  /* Norwegia */
+    { "268", G_EU,  "01,03,06" },  /* Portugalia */
+    { "226", G_EU,  "10,01,03" },  /* Rumunia */
+    { "231", G_EU,  "01,00,02" },  /* Slowacja */
+    { "293", G_EU,  "41,40" },  /* Slowenia */
+    { "240", G_EU,  "02,07,01" },  /* Szwecja */
+    { "216", G_EU,  "30,01,70" },  /* Wegry */
+    { "234", G_EU,  "33,10,30,15" },  /* Wielka Brytania */
+    { "222", G_EU,  "99,01,10,88" },  /* Wlochy */
+};
+
+/* Odczyt MCC obslugujacej komorki z AT+CENG? do net_mcc. */
+static uint8_t sim900_read_mcc(void)
+{
+    uint16_t t;
+    sim900_cmd("AT+CENG=1");
+    sim900_cmd("AT+CENG?");
+    for (t = 0; t < 200; t++) {                       /* do ~2 s              */
+        while (line_ready) {
+            nmea_poll();
+            if (strncmp_P(last_reply, PSTR("+CENG: 0,"), 9) == 0) {
+                char *q = strchr(last_reply, '"');    /* "arfcn,rxl,rxq,mcc,.. */
+                uint8_t f;
+                for (f = 0; q && f < 3; f++) q = strchr(q + 1, ',');
+                if (q) { strncpy(net_mcc, q + 1, 3); net_mcc[3] = '\0'; return 1; }
+            }
+        }
+        _delay_ms(10);
+    }
+    return 0;
+}
+
+/* Czekaj na odpowiedz "OK" od modemu. */
+static uint8_t sim900_wait_ok(uint16_t ms)
+{
+    while (ms--) {
+        while (line_ready) {
+            nmea_poll();
+            if (strcmp_P(last_reply, PSTR("OK")) == 0) return 1;
+        }
+        _delay_ms(1);
+    }
+    return 0;
+}
+
+/* AT+COPS=<tryb>,2,"<MCC><MNC>" */
+static uint8_t sim900_select_operator(char mode, const char *mnc)
+{
+    char cmd[28];
+    strcpy_P(cmd, PSTR("AT+COPS=0,2,\""));
+    cmd[8] = mode;
+    strcat(cmd, net_mcc);
+    strcat(cmd, mnc);
+    strcat_P(cmd, PSTR("\""));
+    sim900_cmd(cmd);
+    return sim900_wait_ok(3000);
+}
+
 static void sim900_roaming(void)
 {
-    char cmd[24];
-    if (strcmp_P(net_mcc, PSTR("260")) == 0) {
+    roam_t e;
+    char mnc[6][3];
+    uint8_t i, n, count, idx, k, tries, found = 0;
+
+    if (!sim900_read_mcc()) return;
+    if (strcmp_P(net_mcc, PSTR("260")) == 0) {        /* Polska              */
         lcd_puts_P(PSTR("KRAJ"));
         return;
     }
     lcd_puts_P(PSTR("ZAGRANICA"));
     if (roaming_mode == 0) {
         lcd_puts_P(PSTR("ZAKAZ ROAMINGU "));
-        restart_with_reason(23);           /* kod 23 @0x671e                    */
+        restart_with_reason(23);
     }
-    strcpy_P(cmd, PSTR("AT+COPS=1,2,"));   /* reczny wybor operatora            */
-    strcat(cmd, net_mcc);                  /* + MNC z tabeli dla roam_op_idx    */
-    sim900_cmd(cmd);
-    config_save_roam_op((uint8_t)(roam_op_idx + 1));   /* nastepny przy porazce */
+
+    for (i = 0; i < sizeof(roam_tab) / sizeof(roam_tab[0]); i++) {
+        memcpy_P(&e, &roam_tab[i], sizeof(e));
+        if (strcmp(e.mcc, net_mcc) != 0) continue;
+        if (e.grp == G_EU) found = 1;
+        else if (e.grp == G_CH) found = (roaming_mode == 1 || roaming_mode == 2);
+        else found = (roaming_mode == 2);
+        break;
+    }
+    if (found && e.grp == G_AUTO) return;             /* Rosja w trybie 2    */
+
+    if (!found) {                                     /* kraj niedozwolony   */
+        for (tries = 0; tries <= 10; tries++) {
+            lcd_puts_P(PSTR("ZAKAZ - "));
+            lcd_puts(net_mcc);
+            _delay_ms(60000);                         /* Wait 60 @0x71de     */
+            sms_poll();
+        }
+        restart_with_reason(25);
+    }
+
+    /* lista MNC do pierwszego "00" (petla @0x7250) */
+    for (count = 0, n = 0; count < 6 && e.mnc[n]; count++, n += 3) {
+        mnc[count][0] = e.mnc[n]; mnc[count][1] = e.mnc[n + 1]; mnc[count][2] = 0;
+        if (mnc[count][0] == '0' && mnc[count][1] == '0') break;
+        if (!e.mnc[n + 2]) { count++; break; }
+    }
+    if (count == 0) return;
+
+    idx = config_load_roam_op();                      /* EEPROM 0x3F         */
+    if (idx > count) { idx = 1; config_save_roam_op(1); }
+    else config_save_roam_op((uint8_t)(idx + 1));     /* nastepnym razem dalej*/
+    if (roaming_mode >= 4) { idx = 1; config_save_roam_op(1); }
+    if (roaming_mode >= 5) count = 1;
+
+    k = 1;
+    if (roaming_mode < 6) {
+        for (i = 1; i <= count; i++) {
+            k = (uint8_t)(i + idx - 1);
+            if (k > count) k -= count;
+            if (sim900_select_operator('1', mnc[k - 1])) return;
+        }
+    }
+    if (roaming_mode <= 6)
+        sim900_select_operator('4', mnc[k - 1]);
 }
 
 /* Otwarcie polaczenia TCP do serwera (@0xbe52 CIPSTART, 0xbe6a CIPSEND) */
@@ -739,8 +896,8 @@ static void config_load_restart_count(void)
 
 /* --- tryb roamingu (0x64, "RoamingPam="): zapis @0x1dac, odczyt @0x1dfe ----- *
  * Dozwolone '0'..'7', inaczej domyslne 3. Gdy siec != 260 i tryb == 0,
- * firmware wypisuje "ZAKAZ ROAMINGU" (@0x668e). Znaczenie wartosci 1..7
- * nie zostalo ustalone.                                                       */
+ * firmware wypisuje "ZAKAZ ROAMINGU" (@0x668e). Znaczenie pozostalych
+ * wartosci: opis przy sim900_roaming() oraz docs/ROAMING.md.                  */
 static void config_save_roaming_mode(uint8_t m)
 {
     char b[2] = { (char)('0' + (m & 7)), '\0' };
@@ -1104,7 +1261,6 @@ int main(void)
         case ST_MODEM_INIT:                /* @0x1378 */
             gps_power(1);
             if (sim900_power_on() && sim900_gprs_attach()) {
-                sim900_roaming();
                 state = ST_HSK;
             }
             break;
@@ -1121,6 +1277,8 @@ int main(void)
             break;
 
         case ST_WORK:                      /* @0x37c.. glowna praca */
+            sim900_roaming();              /* co obieg, jak @0x40d2 -> 0x673a */
+
             /* 1) odczyt i parsowanie GPS (RMC/GGA/VTG) z bufora linii ISR:
              *    konsumuj wszystkie linie zlozone przez ISR od ostatniego obiegu */
             while (line_ready)

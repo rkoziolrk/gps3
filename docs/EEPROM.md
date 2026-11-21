@@ -45,15 +45,13 @@ prawdopodobnie waliduje nowy adres (np. z SMS `NEW*ADR=`).
 **Stan ruchu (0x3C).** Zapisywany przy przejściu w postój (`P`) i przed każdym
 restartem (bieżący stan z RAM `0x0266`), domyślnie `R`. Kopia trafia też do
 zewnętrznej pamięci I2C (bank `0x7E`, adres `0x08`). Firmware zapisuje tu
-tylko `R` albo `P` — bajtów `n<` za `R` w zrzucie nie wyjaśnia żaden znaleziony
-zapis (prawdopodobnie pozostałość).
+tylko `R` albo `P`; bajty `n<` za `R` w zrzucie to śmieci (żaden zapis
+firmware ich nie tworzy).
 
-**Indeks operatora (0x3F).** Firmware ma tabelę preferowanych sieci dla krajów
-(MCC → lista MNC, `@0x6f00..0x7180`: m.in. 262, 278, 242, 268, 226, 231, 293,
-240, 216, 234, 222) i wybiera operatora przez `AT+COPS=1,2,<MCCMNC>`; przy
-braku `OK` — `AT+COPS=4,2,...`. Indeks rotuje po porażkach, po 4 próbach
-wraca do 1. Pusto w zrzucie (bajt `0x3F` to NUL kończący pole `0x3C`) →
-używane `1`.
+**Indeks operatora (0x3F).** Numer operatora z listy preferowanych dla
+bieżącego kraju, od którego zaczyna się następna próba wyboru sieci. Po
+każdej próbie zapisywany jest kolejny numer (rotacja); w trybach roamingu ≥ 4
+zawsze 1. Pusto w zrzucie → używane `1`. Szczegóły: `docs/ROAMING.md`.
 
 **Kody przyczyny restartu (0x42 / 0x67).** Procedura restartu (`0x2a28` →
 `0x7e00`) zapisuje kod pod `0x42`, gdy MCC bieżącej sieci = `260`, w przeciwnym
@@ -87,8 +85,10 @@ ograniczenie przy 50) i w tym czasie czyta SMS. Kopia także w pamięci I2C.
 
 **Tryb roamingu (0x64).** Jedna cyfra `0..7`, inaczej domyślne `3`. Ustawiany
 z odpowiedzi `CONFIG` (`RoamingPam=<n>`, `@0x37e4`), raportowany w ramce
-`FORM` po `R=3/`. Za granicą (MCC ≠ 260) z trybem `0` → `ZAKAZ ROAMINGU` i
-restart z kodem 23. Znaczenie wartości 1–7 nie zostało ustalone.
+`FORM` po `R=3/`. Określa, w których krajach urządzenie może pracować i jak
+wymusza operatora: 0 = zakaz roamingu, 1 = UE/EOG/UK + Szwajcaria,
+2 = jak 1 + pozostała Europa, 3–7 = tylko UE/EOG/UK z różnymi strategiami
+wyboru operatora. W zrzucie `3` (domyślny). Pełny opis: `docs/ROAMING.md`.
 
 ## Zewnętrzna pamięć I2C
 
@@ -108,7 +108,7 @@ najpewniej pozostały po innym programie lub wcześniejszej wersji.
 
 | adres          | zawartość                 | uwagi                               |
 |----------------|---------------------------|-------------------------------------|
-| 0x3D–0x3E      | `6E 3C` (`n<`)            | za `R` w polu stanu ruchu           |
+| 0x3D–0x3E      | `6E 3C` (`n<`)            | śmieci za `R` w polu stanu ruchu    |
 | 0x3F           | `00`                      | NUL za `Rn<`; pole indeksu operatora puste → używane `1` |
 | 0x66           | `00`                      | między polami `0x64` i `0x67`       |
 | 0x202          | `02`                      | poza obszarem konfiguracji          |
