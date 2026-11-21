@@ -87,19 +87,21 @@
 /*  [HW]  Przypisanie peryferiow (potwierdzone z inicjalizacji)               */
 /* ========================================================================== */
 /*
- *  USART0  @0x09/0x0A (UBRR0L=0x33, UCSR0B=0x18 -> RXEN0|TXEN0), wektor RX 0x38
+ *  USART0  @0x09/0x0A (UBRR0L=0x33, UCSR0B=0x18 -> RXEN0|TXEN0), bez przerwania RX
  *  USART1  @0x98..0x9D (UBRR1L=0x33, UCSR1B=0x18 -> RXEN1|TXEN1), wektor RX 0x78
  *          UBRR=51, F_CPU=8MHz, U2X=0  =>  9600 bps 8N1 na obu portach.
  *
  *  Jeden port obsluguje GPS (PA6C, zdania NMEA), drugi SIM900 (odpowiedzi AT).
  *  ISR USART1 (czyta UDR1) sklada linie zakonczone CR/LF -> parser NMEA/AT.
- *  ISR USART0 zapisuje bajty do bufora pierscieniowego @0x0A9C i zlicza @0x0AA0.
+ *  Wektor 0x38 to TIMER1_OVF (zegar 1 s), nie odbior USART0.
+ *  W logu NMEA i komendy AT ida tym samym kanalem — GPS i modem dziela USART1
+ *  (przerwanie ma osobne tryby odbioru: NMEA, odpowiedzi AT, dane TCP).
  *
  *  Piny GPIO ustawione jako wyjscia w init (sbi DDRx):
  *     DDRA.3, PORTA.3=1 ; DDRA.4, PORTA.4=1   (zasilanie/klucze modulow)
  *     DDRD.5, DDRD.6, DDRD.7                   (sterowanie GPS/modem: ON, RESET)
  *     DDRB.4, DDRB.6, PORTB.6=1                (LED / linia CAN / klucz)
- *  Timer0 skonfigurowany jako licznik tyknięcia systemowego (ASSR/TCCR0).
+ *  Timer1: zegar 1 s (przerwanie TIMER1_OVF @0xa33a). ADC wlaczony (ADCSRA/ADMUX).
  */
 
 #define GSM   1          /* UART kierowany do SIM900  (logiczny)            */
@@ -118,7 +120,7 @@ enum tracker_state {
 /* ========================================================================== */
 /*  Odtworzone adresy (potwierdzone w obrazie):
  *   @0x004C/0x4D  wskaznik roboczy (uzywany w ISR, bazowy ptr do stringow)
- *   @0x0A9C       bufor RX USART0 (ring), @0x0AA0 licznik przyjetych bajtow
+ *   @0x0A9C       czas pracy [s] (32-bit), @0x0AA0 licznik sekund (zegar 1 s)
  *   @0x0B38       stan odbioru linii USART1 (==0x22 aktywny)
  *   @0x0B39       biezacy bajt / bufor linii NMEA/AT
  *   @0x0C46       bufor roboczy do skladania i wypisywania napisow (trace)
@@ -254,15 +256,21 @@ static void hw_init(void)
     UBRR1H = 0x00; UBRR1L = 51;  UCSR1B = (1 << RXEN1) | (1 << TXEN1);
     /* (UCSR?C domyslnie 8N1 — 0x06 w rejestrze ramki)                          */
 
-    /* @0x16a..0x172  INT3/INT4 wyzwalanie zboczem (EICRA.bit6,7 / EIMSK)       *
-     *   sbi 0x1a,3; sbi 0x1b,3; sbi 0x1a,4; sbi 0x1b,4  -> EICRB bits          */
-    EICRA = EICRA;  /* [HW] dokladne bity: EICRB.3,4 ustawione (zbocza INT3/4)  */
+    /* @0x150..0x166  Timer1 jako zegar 1 s:
+     *   TCCR1A = 0; TCCR1B = 0x04 (preskaler 256); TIMSK |= TOIE1;
+     *   TCNT1 = 0x85EE -> przepelnienie po 31250 taktach = 1 s przy 8 MHz     */
+    TCCR1A = 0x00;
+    TCCR1B = 0x04;
+    TIMSK |= (1 << TOIE1);
+    TCNT1  = 0x85EE;
 
-    /* @0x17c..0x182  Timer0 jako tick systemowy:
-     *   TCCR0 = 0x86; OCR0 = 0xC0; sbi ASSR/TCCR0.7                            *
-     *   -> tryb CTC, preskaler, przerwanie porownania (podstawa czasu 1 ms)    */
-    TCCR0 = 0x86;
-    OCR0  = 0xC0;
+    /* @0x172  UCSR1B &= ~RXCIE1 (przerwanie RX wlaczane pozniej)              */
+    UCSR1B &= ~(1 << RXCIE1);
+
+    /* @0x17c..0x184  przetwornik ADC: ADCSRA = 0x86 (wlaczony, preskaler 64),
+     *   ADMUX = 0xC0 (napiecie odniesienia wewnetrzne 2,56 V)                 */
+    ADCSRA = 0x86;
+    ADMUX  = 0xC0;
 
     /* @0x184..0x192  kierunki pinow sterujacych modulami (patrz naglowek)      */
     DDRA |= (1 << PA3) | (1 << PA4);   PORTA |= (1 << PA3) | (1 << PA4);
@@ -308,16 +316,25 @@ ISR(USART1_RX_vect)
 }
 
 /* ========================================================================== */
-/*  [HW]  ISR USART0 RX  @0xa33a  (wektor 0x38) — bufor pierscieniowy          */
+/*  [HW]  ISR TIMER1_OVF  @0xa33a  (wektor 14, adres 0x38) — zegar 1 s          */
 /* ========================================================================== */
-#define RXBUF_MAX 64
-static volatile uint8_t rxbuf[RXBUF_MAX];  /* @0x0A9C bufor pierscieniowy      */
-static volatile uint8_t rxcnt;             /* @0x0AA0 licznik przyjetych bajtow */
+/*  KOREKTA: wczesniej opisane jako odbior USART0. Wektor 14 ATmega64 to
+ *  TIMER1_OVF; procedura przeladowuje TCNT1 i co sekunde:
+ *    uptime (0x0A9C, 32-bit) +1, licznik 8-bit (0x0AA0) +1,
+ *    minutniki 0x023E i 0x0242 (32-bit) -1 — ustawiane z odpowiedzi CONFIG
+ *    (pozycje 12 i 6): czas do nastepnego pobrania CONFIG i do nastepnej sesji. */
+static volatile uint32_t uptime_s;         /* 0x0A9C */
+static volatile uint8_t  tick_s;           /* 0x0AA0 */
+static volatile int32_t  t_config;         /* 0x023E  ("GET KONFIG SRV")    */
+static volatile int32_t  t_session;        /* 0x0242  ("SESJA-", "CZEKAMY") */
 
-ISR(USART0_RX_vect)
+ISR(TIMER1_OVF_vect)
 {
-    rxbuf[rxcnt] = UDR0;
-    if (++rxcnt >= RXBUF_MAX) rxcnt = 0;   /* subi r24,0xFF == +1 (z zawinieciem) */
+    TCNT1 += 0x85EE;                       /* @0xa370 */
+    uptime_s++;                            /* @0xa390 (0xa9fa) */
+    tick_s++;                              /* @0xa398 */
+    t_config--;                            /* @0xa3a2 (0xaa22) */
+    t_session--;                           /* @0xa3aa (0xaa22) */
 }
 
 /* ========================================================================== */
@@ -1212,6 +1229,7 @@ static void server_get_config(void)
 
     get_field(r,  6, 5, f); cfg.t0    = strtoul(f, NULL, 10);   /* 0x0242 */
     get_field(r, 12, 5, f); cfg.t1    = strtoul(f, NULL, 10);   /* 0x023E */
+    cli(); t_session = (int32_t)cfg.t0; t_config = (int32_t)cfg.t1; sei();
     get_field(r, 18, 1, f); cfg.p257  = atoi(f);
     if (cfg.p257 == 0) cfg.p257 = 6;                            /* @0x34c2 */
     get_field(r, 20, 1, f); cfg.p_b5e = atoi(f);               /* 0x0B5E */

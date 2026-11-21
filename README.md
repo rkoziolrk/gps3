@@ -34,6 +34,8 @@ docs/     PROTOCOL.md         — ramki protokołu serwera + komendy AT/SMS
           MEMORY_MAP.md       — mapa rejestrów i adresów RAM/flash
           EEPROM.md           — mapa pól EEPROM (zweryfikowana ze zrzutem)
           ROAMING.md          — tryby roamingu i tabela krajów/operatorów
+          SERVER.md           — wymagania po stronie serwera
+server/   tracker_server.py   — serwer testowy (Python 3)
 reverse/  flash.bin           — oryginalny obraz flash (materiał źródłowy)
           flash_disasm.txt    — pełny deasembler AVR do weryfikacji
 ```

@@ -20,7 +20,7 @@ Wykorzystane: 0x0000..0xC3EE (~50 KiB z 64 KiB).
 | Adres | Wektor            | Handler  | Rola                          |
 |-------|-------------------|----------|-------------------------------|
 | 0x00  | RESET             | 0x008C   | start                         |
-| 0x38  | USART0 RX Complete| 0xA33A   | bufor pierścieniowy RX (GPS)  |
+| 0x38  | TIMER1 Overflow   | 0xA33A   | zegar 1 s: uptime, minutniki  |
 | 0x78  | USART1 RX Complete| 0xA3E6   | składanie linii CR/LF (GSM)   |
 
 Pozostałe wektory → `reti` (nieużywane).
@@ -34,8 +34,8 @@ Pozostałe wektory → `reti` (nieużywane).
 | WDTCR          | 0x18→0  | wyłączenie watchdoga                            |
 | UBRR0L / UBRR1L| 51      | 9600 baud @ 8 MHz                              |
 | UCSR0B / UCSR1B| 0x18    | RXEN \| TXEN                                    |
-| TCCR0          | 0x86    | Timer0 — tick systemowy                        |
-| OCR0           | 0xC0    | wartość porównania                             |
+| TCCR1B / TCNT1 | 0x04 / 0x85EE | Timer1 — zegar 1 s (preskaler 256)       |
+| ADCSRA / ADMUX | 0x86 / 0xC0   | ADC włączony, odniesienie 2,56 V         |
 | DDRA           | .3,.4   | wyjścia (PORTA.3/.4 = 1)                        |
 | DDRD           | .5,.6,.7| GSM_PWR / GPS_PWR / RESET                       |
 | DDRB           | .4,.6   | CAN / LED (PORTB.6 = 1)                         |
@@ -49,8 +49,10 @@ Pozostałe wektory → `reti` (nieużywane).
 | Adres   | Zmienna (odtworzona)                                 |
 |---------|------------------------------------------------------|
 | 0x004C/4D | wskaźnik roboczy (używany w ISR, baza do stringów) |
-| 0x0A9C  | bufor RX USART0 (ring)                               |
-| 0x0AA0  | licznik przyjętych bajtów USART0                     |
+| 0x0A9C  | czas pracy w sekundach (32-bit, zegar 1 s)           |
+| 0x0AA0  | licznik sekund (8-bit)                               |
+| 0x023E  | minutnik do pobrania CONFIG (s), z CONFIG poz. 12    |
+| 0x0242  | minutnik do następnej sesji (s), z CONFIG poz. 6     |
 | 0x0B38  | stan odbioru linii USART1 (==0x22 aktywny)           |
 | 0x0B39  | bufor bieżącej linii NMEA/AT                          |
 | 0x0C46  | bufor roboczy do składania/wypisywania napisów       |
