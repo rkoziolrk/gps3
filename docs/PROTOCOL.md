@@ -59,6 +59,39 @@ Obsługa SMS: `AT+CMGF=1`, `AT+CMGR=1`, `AT+CMGD=` (kasowanie).
 
 Po przetworzeniu: `SMS IS CLEAR`. Brak wiadomości: `[Brak SMS]`.
 
+## Odpowiedź `CONFIG` — format stałopozycyjny
+
+Serwer odsyła konfigurację jako napis, w którym każdy parametr siedzi pod
+**stałym offsetem znakowym** o znanej szerokości (nie ma separatorów). Firmware
+wycina pola funkcją `get_field(src, off, width)` (@0xb7ee) i konwertuje `atoi`
+(@0xb714). Odtworzona mapa (funkcja parsera @0x33b6):
+
+| # | offset | szer. | RAM     | uwagi                                   |
+|---|--------|-------|---------|-----------------------------------------|
+| 0 | 6      | 5     | 0x0242  | wartość 32-bit (interwał/licznik)       |
+| 1 | 12     | 5     | 0x023E  | wartość 32-bit (interwał/licznik)       |
+| 2 | 18     | 1     | 0x0257  | gdy `0` → domyślnie `6`                  |
+| 3 | 20     | 1     | 0x0B5E  |                                         |
+| 4 | 22     | 2     | 0x0268  |                                         |
+| 5 | 25     | 1     | 0x0268+ |                                         |
+| 6 | 27     | 2     | 0x0B63  | dodatkowo skalowany (`__mulhi3`)        |
+| 7 | 30     | 1     | 0x0C17  |                                         |
+| – | 33     | 2     | flaga   | `strcmp(pole, ";05")` → blokada roaming |
+| 8 | 37     | 3     | 0x025B  |                                         |
+| 9 | 41     | 2     | 0x025C  |                                         |
+|10 | 44     | 2     | 0x0B76  |                                         |
+|11 | 47     | 1     | 0x0B77  |                                         |
+|12 | 49     | 2     | 0x025E  |                                         |
+|13 | 52     | 1     | 0x0C14  |                                         |
+|14 | 54     | 3     | 0x0C15  |                                         |
+|15 | 59     | 1     | 0x0269  |                                         |
+|16 | 60     | 1     | 0x0B86  |                                         |
+|17 | 61     | 1     | 0x0B87  |                                         |
+|18 | 62     | 1     | 0x0C22  |                                         |
+|19 | 63     | 1     | 0x0C23  |                                         |
+
+Błąd formatu → `-CONFIG-ERROR `. Powiązany parametr: `RoamingPam=` (0xbdae).
+
 ## GPS — NMEA / PMTK
 
 Parsowane zdania: `$GPRMC`, `$GPGGA`, `$GPVTG`. Błędy: ` - RMC ERROR - `,
