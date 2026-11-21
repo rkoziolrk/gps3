@@ -39,6 +39,9 @@ Pozostałe wektory → `reti` (nieużywane).
 | DDRA           | .3,.4   | wyjścia (PORTA.3/.4 = 1)                        |
 | DDRD           | .5,.6,.7| GSM_PWR / GPS_PWR / RESET                       |
 | DDRB           | .4,.6   | CAN / LED (PORTB.6 = 1)                         |
+| DDRC           | .0–.5   | LCD HD44780 4-bit: PC0–3=D4–7, PC4=RS, PC5=E    |
+| EEARL/EEARH    | —       | wewnętrzny EEPROM AVR (zapis @0xb810)           |
+| EEDR           | —       | dane EEPROM (zapis @0xb82a)                     |
 
 ## Kluczowe adresy RAM (z deasemblera)
 

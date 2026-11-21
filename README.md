@@ -21,7 +21,9 @@ GPRS do serwera `*.monitoring-gps.net` i czyta dane z magistrali CAN
 | USART0    | GPS, **9600 8N1**                                                 |
 | USART1    | SIM900, **9600 8N1** (ISR RX składa linie CR/LF)                 |
 | CAN       | czujnik paliwa (SONDA1), RPM, pedał                              |
-| Pamięć    | EEPROM I2C — kolejka rekordów „OLD" na czas braku zasięgu        |
+| Pamięć    | **wewnętrzny EEPROM** ATmega64 — kolejka rekordów „OLD"           |
+| Wyświetlacz| LCD **HD44780** 4-bit na PORTC (status urządzenia)              |
+| CAN źródło| dane z **zewnętrznego** modułu (brama CAN→szeregowa), parsowane  |
 
 ## Struktura katalogów
 
@@ -60,6 +62,7 @@ avr-objdump -D -b binary -m avr:5 reverse/flash.bin | less
 - [x] Mapa UART / przerwań RX
 - [x] Architektura protokołu (z tablicy stringów)
 - [x] Szkielet maszyny stanów + sekwencja AT
-- [ ] Parser NMEA — pełne rozbicie pól (RMC/GGA/VTG)
-- [ ] Warstwa EEPROM I2C — dokładny format rekordów
-- [ ] Dekodowanie ramek CAN — identyfikatory i skalowanie
+- [x] Parser NMEA — rozbicie pól (RMC/GGA/VTG) + podłączenie do ISR
+- [x] Pamięć rekordów — wewnętrzny EEPROM AVR (kolejka FIFO)
+- [x] CAN — parser pól (paliwo/RPM/pedał/sonda) + wygładzanie
+- [x] Wyświetlacz LCD HD44780 (korekta: PORTC to LCD, nie trace UART)

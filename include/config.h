@@ -31,6 +31,18 @@
 #define LED_BIT        PB6         /* DDRB.6, PORTB.6=1                        */
 #define CAN_BIT        PB4         /* DDRB.4                                   */
 
+/* --- Wyswietlacz LCD HD44780 (4-bit) na PORTC (DDRC.0..5 = wyjscia) ------- */
+#define LCD_PORT       PORTC
+#define LCD_D4_D7      0x0F        /* PC0..PC3 = D4..D7                        */
+#define LCD_RS_BIT     PC4
+#define LCD_E_BIT      PC5
+
+/* --- Pamiec rekordow: wewnetrzny EEPROM ATmega64 (<avr/eeprom.h>) --------- *
+ * NIE I2C/SPI — dostep przez EEARL/EEARH/EEDR/EECR (patrz docs/MEMORY_MAP.md) */
+
+/* --- CAN: dane z zewnetrznego modulu (brama CAN->szeregowa), parsowane ---- *
+ * w RAM; ATmega64 nie ma kontrolera CAN.                                     */
+
 /* --- Serwer -------------------------------------------------------------- */
 #define SERVER_SUFFIX  ".MONITORING-GPS.NET"
 #define SERVER_DEFAULT "lgps01.monitoring-gps.net"

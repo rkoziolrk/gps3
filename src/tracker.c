@@ -41,6 +41,7 @@
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
 #include <avr/pgmspace.h>
+#include <avr/eeprom.h>
 #include <util/delay.h>
 #include <string.h>
 #include <stdlib.h>
@@ -59,9 +60,9 @@
  *   @0xb672         itoa ze znakiem           ->  itoa()/ltoa()
  *   @0xb680         itoa bez znaku            ->  utoa()/ultoa()
  *   @0xb714         akumulacja cyfr '0'..'9'  ->  atoi()/strtol()
- *   @0xab22         putchar w petli (flash)   ->  uart0_puts_P()  (trace)
- *   @0xab16/0xab12  putchar w petli (RAM)     ->  uart0_puts()    (trace)
- *   @0xac0c         putchar na UART0          ->  uart0_putc()
+ *   @0xab22         putchar w petli (flash)   ->  lcd_puts_P()  (trace)
+ *   @0xab16/0xab12  putchar w petli (RAM)     ->  lcd_puts()    (trace)
+ *   @0xac0c         putchar na UART0          ->  lcd_putc()
  *   @0xac72         petla zwloki ~2000/ms     ->  _delay_ms()
  *   @0xae98         mul r20*r16...            ->  __mulhi3 (libgcc)
  *   @0xb25c         lpm przez Z               ->  __lpm    (libgcc)
@@ -144,17 +145,50 @@ static volatile uint8_t rx1_active = 0x22;/* odbior wlaczony (@0x0B38 == 0x22) *
 static char             nmea[LINE_MAX];   /* kopia linii do parsowania w petli */
 
 /* ========================================================================== */
-/*  [LIB]  UART0 — port serwisowy/trace                                       */
+/*  [HW]  Wyswietlacz LCD HD44780 w trybie 4-bit na PORTC                      */
 /* ========================================================================== */
-/* @0xac0c */
-static void uart0_putc(char c)
+/*  KOREKTA wobec wczesniejszej wersji: to, co wygladalo na "trace UART0",
+ *  jest w rzeczywistosci zapisem na LCD. Dowody z obrazu:
+ *    @0xac0c  swap r24 + 2x wyslij nibble + impuls E  -> zapis bajtu 4-bit
+ *    @0xac18  4x (asr r24; sbi/cbi PORTC.{3,2,1,0})    -> wyslanie nibble
+ *    @0xac6c  krotka zwloka (impuls E / busy)
+ *    @0xab5a  wysyla komendy 0x01 (Clear) i 0x80 (Home) -> typowe HD44780
+ *  Przypisanie pinow (DDRC.0..5 = wyjscia, z init @0xab84):
+ *    PC0..PC3 = D4..D7 (szyna danych 4-bit), PC4 = RS, PC5 = E
+ *  UART0 (UDR0) sluzy do GPS (RX); napisy statusowe ida na LCD.                */
+
+#define LCD_DATA_PORT  PORTC   /* PC0..PC3 = D4..D7 */
+#define LCD_RS         PC4
+#define LCD_E          PC5
+
+/* @0xac18 — wyslij 4 bity (nibble) na PC3..PC0 */
+static void lcd_nibble(uint8_t v)
 {
-    while (!(UCSR0A & (1 << UDRE0)))
-        ;
-    UDR0 = c;
+    if (v & 1) PORTC |=  (1 << PC3); else PORTC &= ~(1 << PC3);
+    if (v & 2) PORTC |=  (1 << PC2); else PORTC &= ~(1 << PC2);
+    if (v & 4) PORTC |=  (1 << PC1); else PORTC &= ~(1 << PC1);
+    if (v & 8) PORTC |=  (1 << PC0); else PORTC &= ~(1 << PC0);
+    PORTC |=  (1 << LCD_E);          /* impuls E */
+    _delay_us(1);
+    PORTC &= ~(1 << LCD_E);
 }
-/* @0xab16 */  static void uart0_puts  (const char *s) { while (*s) uart0_putc(*s++); }
-/* @0xab22 */  static void uart0_puts_P(const char *s) { char c; while ((c = pgm_read_byte(s++))) uart0_putc(c); }
+
+/* @0xac0c — wyslij pelny bajt (dwa nibble: starszy, potem mlodszy) */
+static void lcd_byte(uint8_t b)
+{
+    lcd_nibble(b >> 4);
+    lcd_nibble(b & 0x0F);
+    _delay_us(50);                   /* @0xac6c  czas wykonania              */
+}
+
+static void lcd_cmd (uint8_t c) { PORTC &= ~(1 << LCD_RS); lcd_byte(c); }
+static void lcd_putc(char c)    { PORTC |=  (1 << LCD_RS); lcd_byte((uint8_t)c); }
+
+/* @0xab5a — Clear (0x01) + Home (0x80) */
+static void lcd_clear_home(void) { lcd_cmd(0x01); _delay_ms(2); lcd_cmd(0x80); }
+
+/* @0xab16 */  static void lcd_puts  (const char *s) { while (*s) lcd_putc(*s++); }
+/* @0xab22 */  static void lcd_puts_P(const char *s) { char c; while ((c = pgm_read_byte(s++))) lcd_putc(c); }
 
 /* ========================================================================== */
 /*  [LIB]  UART1 — kanal GPS/GSM                                              */
@@ -288,7 +322,7 @@ static char *nmea_field(char *s, uint8_t n, char *out)
 static uint8_t gps_parse_rmc(char *s)
 {
     char f[12];
-    if (strncmp_P(s, PSTR("$GPRMC"), 6) != 0) { uart0_puts_P(PSTR(" - RMC ERROR - ")); return 0; }
+    if (strncmp_P(s, PSTR("$GPRMC"), 6) != 0) { lcd_puts_P(PSTR(" - RMC ERROR - ")); return 0; }
 
     nmea_field(s, 2, f);                          /* status A/V                */
     fix.valid = (f[0] == 'A');
@@ -306,7 +340,7 @@ static uint8_t gps_parse_rmc(char *s)
 static void gps_parse_gga(char *s)
 {
     char f[12];
-    if (strncmp_P(s, PSTR("$GPGGA"), 6) != 0) { uart0_puts_P(PSTR(" - GGA ERROR - ")); return; }
+    if (strncmp_P(s, PSTR("$GPGGA"), 6) != 0) { lcd_puts_P(PSTR(" - GGA ERROR - ")); return; }
     nmea_field(s, 7, f);  fix.sats = atoi(f);     /* SAT-                      */
     nmea_field(s, 9, fix.alt);                    /* ALT-   (m n.p.m.)         */
 }
@@ -314,7 +348,7 @@ static void gps_parse_gga(char *s)
 /* $GPVTG,course,T,,M,speed_kn,N,speed_kmh,K,... */
 static void gps_parse_vtg(char *s)
 {
-    if (strncmp_P(s, PSTR("$GPVTG"), 6) != 0) { uart0_puts_P(PSTR(" - VTG ERROR - ")); return; }
+    if (strncmp_P(s, PSTR("$GPVTG"), 6) != 0) { lcd_puts_P(PSTR(" - VTG ERROR - ")); return; }
     nmea_field(s, 1, fix.course);                 /* COURSE-                   */
     nmea_field(s, 7, fix.speed);                  /* SPEED- (km/h)             */
     /* detekcja RUCH/POSTOJ z progu predkosci -> fix.moving                    */
@@ -361,8 +395,8 @@ static void gps_config(void)
 /* @0xc01a GPS-ON / @0xc022 GPS-OF — sterowanie zasilaniem modulu GPS (pin D) */
 static void gps_power(uint8_t on)
 {
-    if (on) { PORTD |=  (1 << PD6); uart0_puts_P(PSTR("GPS-ON")); }
-    else    { PORTD &= ~(1 << PD6); uart0_puts_P(PSTR("GPS-OF")); }
+    if (on) { PORTD |=  (1 << PD6); lcd_puts_P(PSTR("GPS-ON")); }
+    else    { PORTD &= ~(1 << PD6); lcd_puts_P(PSTR("GPS-OF")); }
 }
 
 /* ========================================================================== */
@@ -371,7 +405,7 @@ static void gps_power(uint8_t on)
 /*  Sekwencja wprost z tablicy stringow 0xc036..0xc0dc:                        */
 static uint8_t sim900_power_on(void)
 {
-    uart0_puts_P(PSTR("WLACZAM MODEM"));   /* 0xc03e */
+    lcd_puts_P(PSTR("WLACZAM MODEM"));   /* 0xc03e */
     PORTD |= (1 << PD5);                   /* linia PWRKEY/zasilanie            */
     _delay_ms(2000);
 
@@ -405,7 +439,7 @@ static uint8_t sim900_gprs_attach(void)
 static void sim900_roaming(void)
 {
     if (roaming_block) {
-        uart0_puts_P(PSTR("ZAKAZ ROAMINGU "));
+        lcd_puts_P(PSTR("ZAKAZ ROAMINGU "));
         sim900_cmd("AT+COPS=4,2,");        /* wymus konkretnego operatora       */
     } else {
         sim900_cmd("AT+COPS=1,2,");        /* automatyczny wybor                */
@@ -441,50 +475,147 @@ static void sim900_tcp_send(const char *payload)
 static void sms_poll(void)
 {
     char buf[160];
-    uart0_puts_P(PSTR("-- CZYTAM SMS  ---"));
+    lcd_puts_P(PSTR("-- CZYTAM SMS  ---"));
     sim900_cmd("AT+CMGF=1");               /* tryb tekstowy                     */
     sim900_cmd("AT+CMGR=1");               /* odczyt 1. wiadomosci              */
     /* [REC] jesli "ERROR"/"[Brak SMS]" -> wyjdz */
-    /* if (strstr_P(buf, PSTR("RESET"))) { uart0_puts_P(PSTR("KOMENDA RESET")); reset_mcu(); } */
+    /* if (strstr_P(buf, PSTR("RESET"))) { lcd_puts_P(PSTR("KOMENDA RESET")); reset_mcu(); } */
     /* if (strstr_P(buf, PSTR("NEW*ADR="))) { parse_new_server(buf); save_config_eeprom(); } */
     sim900_cmd("AT+CMGD=1");               /* skasuj                            */
-    uart0_puts_P(PSTR("SMS IS CLEAR"));
+    lcd_puts_P(PSTR("SMS IS CLEAR"));
     (void)buf;
 }
 
-/* ========================================================================== */
-/*  [REC]  Pamiec EEPROM I2C — bufor rekordow "OLD"  (@0xbbaa/0xbbc8)          */
-/* ========================================================================== */
-/*  "ZAPIS DO PAMIECI" / "ODCZYT Z PAMIECI" + "Bank=" / " Adr=".
- *  Gdy brak zasiegu: rekordy pozycji trafiaja do EEPROM. Po odzyskaniu laczna
- *  wysylane sa jako ramki "LOO-02;" ("WYSLALEM DANE OLD" / "BRAK DANYCH OLD").*/
-static void mem_store_record(const char *rec)   { /* I2C: wybor banku/adresu, zapis */ (void)rec; }
-static int  mem_read_record (char *out, uint8_t idx) { (void)out; (void)idx; return 0; }
+/* ========================================================================== *
+ *  [HW/REC]  Pamiec rekordow "OLD" w wewnetrznym EEPROM ATmega64             *
+ * ========================================================================== *
+ *  KOREKTA: to NIE jest EEPROM I2C. W obrazie dostep idzie przez rejestry
+ *  sprzetowego EEPROM AVR: EEARL/EEARH (@0xb810), EEDR (@0xb82a), EECR — czyli
+ *  avr-libc <avr/eeprom.h>. Uzywamy gotowych funkcji bibliotecznych.
+ *
+ *  Logiczne adresowanie "Bank=" / "Adr=" (stringi 0xbbbc / 0xbbc2) dzieli
+ *  2 KiB EEPROM na banki po REC_SIZE bajtow. Kolejka FIFO rekordow pozycji
+ *  zapisywanych przy braku zasiegu; po odzyskaniu laczna wysylane jako "LOO".
+ *  Statusy na LCD: "ADRES MEM OK/ERROR", "PORT MEM OK/LEN ERROR/VAL ERROR".    */
+
+#define REC_SIZE   48                   /* dlugosc jednego rekordu pozycji     */
+#define REC_SLOTS  40                   /* ~2KiB/48, zostawiajac miejsce na glowe*/
+
+/* Glowa/ogon kolejki trzymane na koncu EEPROM (poza obszarem rekordow).       */
+static uint8_t EEMEM ee_head;           /* indeks najstarszego rekordu         */
+static uint8_t EEMEM ee_tail;           /* indeks nastepnego wolnego slotu     */
+static uint8_t EEMEM ee_recs[REC_SLOTS][REC_SIZE];
+
+static uint8_t mem_count(void)          /* ile rekordow czeka */
+{
+    uint8_t h = eeprom_read_byte(&ee_head);
+    uint8_t t = eeprom_read_byte(&ee_tail);
+    return (uint8_t)((t - h + REC_SLOTS) % REC_SLOTS);
+}
+
+/* Zapis rekordu do EEPROM (bank = slot, adr = offset). */
+static void mem_store_record(const char *rec)
+{
+    uint8_t t = eeprom_read_byte(&ee_tail);
+    if (mem_count() >= REC_SLOTS - 1) {            /* pelno -> "PORT MEM LEN ERROR" */
+        lcd_puts_P(PSTR("PORT MEM LEN ERROR"));
+        return;
+    }
+    lcd_puts_P(PSTR("ZAPIS DO PAMIECI"));          /* 0xbbaa */
+    eeprom_write_block(rec, ee_recs[t], REC_SIZE);
+    eeprom_write_byte(&ee_tail, (uint8_t)((t + 1) % REC_SLOTS));
+    lcd_puts_P(PSTR("PORT MEM OK"));
+}
+
+/* Odczyt najstarszego rekordu (bez usuwania). Zwraca 1 gdy byl rekord. */
+static int mem_read_record(char *out)
+{
+    uint8_t h = eeprom_read_byte(&ee_head);
+    if (mem_count() == 0) return 0;
+    lcd_puts_P(PSTR("ODCZYT Z PAMIECI"));          /* 0xbbc8 */
+    eeprom_read_block(out, ee_recs[h], REC_SIZE);
+    out[REC_SIZE - 1] = '\0';
+    return 1;
+}
+
+/* Potwierdzenie wyslania -> zdejmij z kolejki. */
+static void mem_pop(void)
+{
+    uint8_t h = eeprom_read_byte(&ee_head);
+    eeprom_write_byte(&ee_head, (uint8_t)((h + 1) % REC_SLOTS));
+}
 
 static void send_old_records(void)
 {
-    char rec[64];
-    uart0_puts_P(PSTR("LOO-BE"));          /* begin */
-    if (mem_read_record(rec, 0)) {
-        sim900_tcp_send(rec);              /* "LOO-02;..." */
-        uart0_puts_P(PSTR("WYSLALEM DANE OLD    "));
+    char rec[REC_SIZE];
+    lcd_puts_P(PSTR("LOO-BE"));          /* begin */
+    if (mem_read_record(rec)) {
+        sim900_tcp_send(rec);            /* "LOO-02;..." */
+        mem_pop();                       /* po potwierdzeniu wyslania           */
+        lcd_puts_P(PSTR("WYSLALEM DANE OLD    "));
     } else {
-        uart0_puts_P(PSTR("BRAK DANYCH OLD"));
+        lcd_puts_P(PSTR("BRAK DANYCH OLD"));
     }
-    uart0_puts_P(PSTR("LOO-EN"));          /* end */
+    lcd_puts_P(PSTR("LOO-EN"));          /* end */
 }
 
-/* ========================================================================== */
-/*  [REC]  Magistrala CAN — paliwo / RPM / pedal  (@0x924a i okolice)          */
-/* ========================================================================== */
-/*  Stringi 0xc3d4 "BRAK CAN", 0xc3de "RAMKA CAN ERROR", 0xbcac "CAN=",
- *  oraz pola: Paliwo=, RPM=, Pedal=, SONDA1=, W_can=, WYGLADZ= (usrednianie).
- *  Odczyt ramek CAN -> wygladzanie (filtr) poziomu paliwa (SONDA1).           */
-static struct { uint16_t rpm, fuel, pedal, sonda1; uint8_t ok; } can_data;
+/* ========================================================================== *
+ *  [REC]  CAN — paliwo / RPM / pedal / sonda  (parser @0x924a)               *
+ * ========================================================================== *
+ *  WAZNE: ATmega64 nie ma kontrolera CAN, a w obrazie nie ma ani SPI, ani
+ *  magistrali CAN. Funkcja @0x924a NIE czyta sprzetu — PARSUJE dane CAN juz
+ *  odebrane do bufora RAM (~0x0B82): wyciaga pola przez atoi (@0xb714), liczy
+ *  roznice miedzy kolejnymi probkami (instrukcje sub/sbc @0x92a2) i wygladza.
+ *  Dane CAN dostarcza wiec ZEWNETRZNY modul (brama CAN->szeregowa / FMS),
+ *  a MCU je interpretuje. Stringi: "CAN=", "BRAK CAN", "RAMKA CAN ERROR",
+ *  "Paliwo=", " RPM=", " Pedal=", "SONDA1=", " W_can=", "WYGLADZ= J=".         */
+
+static struct {
+    uint16_t rpm;         /* RPM=                                              */
+    uint16_t fuel;        /* Paliwo=                                           */
+    uint16_t pedal;       /* Pedal=                                            */
+    uint16_t sonda1;      /* SONDA1= (surowy poziom paliwa z czujnika)         */
+    uint16_t sonda1_avg;  /* W_sonda1 — wygladzony (filtr usredniajacy)        */
+    int16_t  fuel_delta;  /* roznica wobec poprzedniej probki (@0x92a2)        */
+    uint8_t  ok;          /* 0 = "BRAK CAN" / blad ramki                       */
+} can_data;
+
+/* Bufor z danymi CAN od zewnetrznego modulu (odpowiednik RAM ~0x0B82).        */
+static char can_buf[64];
+
+/* Prosty filtr usredniajacy (wygladzanie SONDA1): wykladniczy, N=8.           */
+static uint16_t smooth(uint16_t avg, uint16_t sample)
+{
+    return (uint16_t)(avg - (avg >> 3) + (sample >> 3));   /* avg += (x-avg)/8 */
+}
+
 static void can_read(void)
 {
-    /* [REC] odbior ramki, walidacja; przy bledzie -> "RAMKA CAN ERROR" */
-    /* usrednianie SONDA1: W_sonda1 = (suma_probek)/N  ("WYGLADZ= J=")   */
+    char f[12];
+
+    if (can_buf[0] == '\0') {                 /* brak danych od modulu CAN     */
+        can_data.ok = 0;
+        lcd_puts_P(PSTR("BRAK CAN "));         /* 0xc3d4                        */
+        return;
+    }
+    if (strncmp_P(can_buf, PSTR("CAN="), 4) != 0) {   /* zly naglowek ramki    */
+        can_data.ok = 0;
+        lcd_puts_P(PSTR("RAMKA CAN ERROR"));   /* 0xc3de                        */
+        return;
+    }
+
+    uint16_t prev_fuel = can_data.fuel;
+
+    nmea_field(can_buf, 1, f); can_data.rpm    = atoi(f);   /* RPM=            */
+    nmea_field(can_buf, 2, f); can_data.fuel   = atoi(f);   /* Paliwo=         */
+    nmea_field(can_buf, 3, f); can_data.pedal  = atoi(f);   /* Pedal=          */
+    nmea_field(can_buf, 4, f); can_data.sonda1 = atoi(f);   /* SONDA1=         */
+
+    /* roznica zuzycia paliwa (sub/sbc @0x92a2) */
+    can_data.fuel_delta = (int16_t)(can_data.fuel - prev_fuel);
+    /* wygladzanie poziomu paliwa (WYGLADZ= / W_sonda1) */
+    can_data.sonda1_avg = smooth(can_data.sonda1_avg, can_data.sonda1);
+    can_data.ok = 1;
 }
 
 /* ========================================================================== */
@@ -670,7 +801,7 @@ static void server_get_config(void)
 /* ========================================================================== */
 static void reset_mcu(void)
 {
-    uart0_puts_P(PSTR("RESTART"));
+    lcd_puts_P(PSTR("RESTART"));
     wdt_enable(WDTO_15MS);                 /* reset przez watchdog              */
     for (;;) ;
 }
@@ -684,8 +815,8 @@ int main(void)
 
     hw_init();                             /* @0x8c  [HW] */
     gps_config();                          /* PMTK: wybor zdan NMEA */
-    uart0_puts_P(PSTR("SIM900"));
-    uart0_puts_P(PSTR("ver="));            /* "2.65" */
+    lcd_puts_P(PSTR("SIM900"));
+    lcd_puts_P(PSTR("ver="));            /* "2.65" */
 
     for (;;) {                             /* glowna petla @0x2c2 */
         wdt_reset();
@@ -705,7 +836,7 @@ int main(void)
                 server_get_config();
                 state = ST_WORK;
             } else {
-                uart0_puts_P(PSTR("- HSK PROBLEM -5s -"));
+                lcd_puts_P(PSTR("- HSK PROBLEM -5s -"));
                 _delay_ms(5000);
                 state = ST_MODEM_INIT;
             }
@@ -717,8 +848,8 @@ int main(void)
             while (line_ready)
                 nmea_poll();               /* wypelnia strukture 'fix'           */
 
-            if (fix.valid) uart0_puts_P(PSTR("NOWE DANE GPS"));
-            else           uart0_puts_P(PSTR("BRAK NOWYCH GPS"));
+            if (fix.valid) lcd_puts_P(PSTR("NOWE DANE GPS"));
+            else           lcd_puts_P(PSTR("BRAK NOWYCH GPS"));
 
             /* 2) odczyt CAN (paliwo/RPM) */
             can_read();
@@ -734,7 +865,7 @@ int main(void)
                     sim900_tcp_send(frame);          /* "-- WYSYLAM DANE ---" */
                 } else {
                     mem_store_record(frame);         /* "ZAPIS DO PAMIECI"    */
-                    uart0_puts_P(PSTR("NET PROBLEM"));
+                    lcd_puts_P(PSTR("NET PROBLEM"));
                 }
             }
 
