@@ -131,6 +131,18 @@ static struct {
     uint8_t  moving;              /* RUCH / POSTOJ                           */
 } fix;
 
+/* --------------------------------------------------------------------------
+ *  Bufor linii UART1 wspoldzielony miedzy ISR (producent) a petla (konsument).
+ *  'volatile', bo zmienia sie w przerwaniu. Odpowiada polom @0x0B38/0x0B39.
+ * -------------------------------------------------------------------------- */
+#define LINE_MAX 96
+static volatile char    line[LINE_MAX];   /* skladana linia (@0x0B39)          */
+static volatile uint8_t line_len;         /* dlugosc biezacej linii            */
+static volatile uint8_t line_ready;       /* 1 = kompletna linia czeka         */
+static volatile uint8_t got_cr;           /* widziano CR                       */
+static volatile uint8_t rx1_active = 0x22;/* odbior wlaczony (@0x0B38 == 0x22) */
+static char             nmea[LINE_MAX];   /* kopia linii do parsowania w petli */
+
 /* ========================================================================== */
 /*  [LIB]  UART0 — port serwisowy/trace                                       */
 /* ========================================================================== */
@@ -215,30 +227,39 @@ static void hw_init(void)
  */
 ISR(USART1_RX_vect)
 {
-    uint8_t b = UDR1;                 /* lds 0x009C */
-    extern volatile uint8_t rx1_active, line_len, got_cr;
-    extern char line[];
-    if (rx1_active != 0x22)           /* cpi 0x22 */
+    uint8_t b = UDR1;                 /* lds 0x009C — odczyt kasuje flage RXC   */
+
+    if (rx1_active != 0x22)           /* cpi 0x22 — odbior nieaktywny           */
         return;
-    line[line_len] = b;               /* st X,r24 @0x0B39+idx */
-    if (b == '\r') got_cr = 1;        /* cpi 0x0D */
-    if (b == '\n' && got_cr) {        /* cpi 0x0A -> linia kompletna */
-        line[line_len] = '\0';
-        /* ustaw flage "linia gotowa" dla petli glownej */
-    } else {
-        line_len++;
+
+    if (b == '\r') {                  /* CR  (0x0D)                             */
+        got_cr = 1;
+        return;
     }
+    if (b == '\n') {                  /* LF  (0x0A) — koniec linii po CR        */
+        if (got_cr && !line_ready) {  /* nie nadpisuj, dopoki petla nie odczyta */
+            line[line_len] = '\0';
+            line_ready = 1;           /* flaga dla petli glownej (konsument)    */
+        }
+        got_cr   = 0;
+        line_len = 0;
+        return;
+    }
+    if (line_len < LINE_MAX - 1 && !line_ready)
+        line[line_len++] = b;         /* skladanie bajtow linii (@0x0B39+idx)   */
 }
 
 /* ========================================================================== */
 /*  [HW]  ISR USART0 RX  @0xa33a  (wektor 0x38) — bufor pierscieniowy          */
 /* ========================================================================== */
+#define RXBUF_MAX 64
+static volatile uint8_t rxbuf[RXBUF_MAX];  /* @0x0A9C bufor pierscieniowy      */
+static volatile uint8_t rxcnt;             /* @0x0AA0 licznik przyjetych bajtow */
+
 ISR(USART0_RX_vect)
 {
-    extern volatile uint8_t rxbuf[]; /* @0x0A9C */
-    extern volatile uint8_t rxcnt;   /* @0x0AA0 */
     rxbuf[rxcnt] = UDR0;
-    rxcnt++;                          /* subi r24,0xFF == +1 */
+    if (++rxcnt >= RXBUF_MAX) rxcnt = 0;   /* subi r24,0xFF == +1 (z zawinieciem) */
 }
 
 /* ========================================================================== */
@@ -298,6 +319,36 @@ static void gps_parse_vtg(char *s)
     nmea_field(s, 7, fix.speed);                  /* SPEED- (km/h)             */
     /* detekcja RUCH/POSTOJ z progu predkosci -> fix.moving                    */
     fix.moving = (atoi(fix.speed) > 0);
+}
+
+/* --------------------------------------------------------------------------
+ *  Dyspozytor linii (KONSUMENT) — wywolywany z petli glownej.
+ *  Jesli ISR zlozyla kompletna linie, przejmuje ja (z wylaczonymi przerwaniami,
+ *  zeby nie zlapac jej w polowie) i kieruje do wlasciwego parsera po prefiksie.
+ *  Zwraca 1, gdy przetworzono zdanie pozycyjne (RMC z waznym fixem).
+ * -------------------------------------------------------------------------- */
+static uint8_t nmea_poll(void)
+{
+    uint8_t new_fix = 0;
+
+    if (!line_ready)                  /* nic nie czeka                          */
+        return 0;
+
+    cli();                            /* sekcja krytyczna: kopia bufora ISR     */
+    {   uint8_t i;                    /* reczna kopia (line[] jest volatile)    */
+        for (i = 0; i < LINE_MAX - 1 && line[i]; i++) nmea[i] = line[i];
+        nmea[i] = '\0';
+    }
+    line_ready = 0;                   /* zwolnij bufor dla ISR                  */
+    sei();
+
+    if      (!strncmp_P(nmea, PSTR("$GPRMC"), 6)) new_fix = gps_parse_rmc(nmea);
+    else if (!strncmp_P(nmea, PSTR("$GPGGA"), 6)) gps_parse_gga(nmea);
+    else if (!strncmp_P(nmea, PSTR("$GPVTG"), 6)) gps_parse_vtg(nmea);
+    /* pozostale linie (odpowiedzi AT modemu: OK / ERROR / +CSQ / +CENG ...)
+     * obsluguje osobno warstwa modemu — tu je pomijamy.                        */
+
+    return new_fix;
 }
 
 /* Konfiguracja PA6C: wybor zdan NMEA przez PMTK (@strings 0xbeaa..0xbf4c) */
@@ -661,7 +712,11 @@ int main(void)
             break;
 
         case ST_WORK:                      /* @0x37c.. glowna praca */
-            /* 1) odczyt i parsowanie GPS (RMC/GGA/VTG) z bufora linii */
+            /* 1) odczyt i parsowanie GPS (RMC/GGA/VTG) z bufora linii ISR:
+             *    konsumuj wszystkie linie zlozone przez ISR od ostatniego obiegu */
+            while (line_ready)
+                nmea_poll();               /* wypelnia strukture 'fix'           */
+
             if (fix.valid) uart0_puts_P(PSTR("NOWE DANE GPS"));
             else           uart0_puts_P(PSTR("BRAK NOWYCH GPS"));
 
