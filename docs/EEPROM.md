@@ -98,3 +98,26 @@ PD0 = SCL, PD1 = SDA, open-drain przez DDRD (`0xb9c6` START, `0xb9e4` STOP,
 i odczyt w stylu 24Cxx (adres urządzenia + 2 bajty adresu), wyżej `0xe42` /
 `0xfa6` (bank + adres; komunikaty `ZAPIS DO PAMIECI`, `ODCZYT Z PAMIECI`,
 `Bank=`, ` Adr=`). Zrzut tej pamięci nie jest dostępny.
+
+## Bajty niezidentyfikowane
+
+Firmware ustawia adres EEPROM tylko w jednym miejscu (`0xb80c`), wołanym przez
+procedury odczytu i zapisu, a te mają 6 wywołań sięgających najdalej `0x6A`.
+Poniższe dane **nie są czytane ani zapisywane przez ten firmware** —
+najpewniej pozostały po innym programie lub wcześniejszej wersji.
+
+| adres          | zawartość                 | uwagi                               |
+|----------------|---------------------------|-------------------------------------|
+| 0x3D–0x3E      | `6E 3C` (`n<`)            | za `R` w polu stanu ruchu           |
+| 0x3F           | `00`                      | NUL za `Rn<`; pole indeksu operatora puste → używane `1` |
+| 0x66           | `00`                      | między polami `0x64` i `0x67`       |
+| 0x202          | `02`                      | poza obszarem konfiguracji          |
+| 0x500–0x53D    | 62 × `14`                 | j.w.                                |
+| 0x666–0x672    | 13 × `14`                 | j.w.                                |
+| 0x673          | `FF`                      | przerwa w bloku                     |
+| 0x674–0x693    | 32 × `14`                 | j.w.                                |
+| 0x766          | `14`                      | j.w.                                |
+
+Bajt `0x66` może być NUL-em po wcześniejszym, dwuznakowym zapisie pola `0x64`,
+które firmware potem zastąpił wartością domyślną (np. po błędnej wartości z
+`CONFIG`) — to przypuszczenie, nie zostało potwierdzone.
