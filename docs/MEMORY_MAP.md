@@ -10,7 +10,7 @@ i z procedur obsługi przerwań.
 | 0x0000..0x008B    | tablica wektorów przerwań                   |
 | 0x008C            | reset / start (crt0 + `main`)               |
 | ~0x0100..0x7800   | kod aplikacji                               |
-| ~0xA300..0xC3EE   | biblioteka BASCOM-AVR + tablica stringów    |
+| ~0xA300..0xC3EE   | procedury biblioteczne + tablica stringów   |
 | 0xC3EE..0xFFFF    | puste (0xFF)                                |
 
 Wykorzystane: 0x0000..0xC3EE (~50 KiB z 64 KiB).
@@ -57,19 +57,18 @@ Pozostałe wektory → `reti` (nieużywane).
 
 ## Biblioteka wykonawcza
 
-Oryginał skompilowano w **BASCOM-AVR** (patrz `docs/COMPILER.md`). Pełne
-zestawienie procedur biblioteki i ich odpowiedników w C jest w nagłówku
-`src/tracker.c` (sekcja `[LIB]`). Najczęściej wołane:
+Pełne zestawienie procedur bibliotecznych i ich odpowiedników w C jest w
+nagłówku `src/tracker.c` (sekcja `[LIB]`). Najczęściej wołane:
 
-| Adres   | Wywołań | BASCOM                 | w rekonstrukcji |
+| Adres   | Wywołań | działanie              | w rekonstrukcji |
 |---------|---------|------------------------|-----------------|
 | 0xAEAC  | 352     | przypisanie stałej     | `strcpy_P`      |
 | 0xAAE6  | 287     | konkatenacja           | `strcat`        |
 | 0xB7D8  | 186     | przypisanie napisu     | `strcpy`        |
-| 0xAB22  | 140     | `Lcd "stała"`          | `lcd_puts_P`    |
+| 0xAB22  | 140     | napis na LCD           | `lcd_puts_P`    |
 | 0xB85A  | 122     | porównanie napisów     | `strcmp_P`      |
-| 0xAC72  | 71      | `Waitms`               | `_delay_ms`     |
-| 0xAB5A  | 57      | `Cls`                  | `lcd_clear_home`|
+| 0xAC72  | 71      | zwłoka w ms            | `_delay_ms`     |
+| 0xAB5A  | 57      | czyszczenie LCD        | `lcd_clear_home`|
 
 ## Funkcje EEPROM (poprawka)
 

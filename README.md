@@ -8,7 +8,7 @@ GPRS do serwera `*.monitoring-gps.net` i czyta dane z magistrali CAN
 > **Uwaga:** kod w `src/` to **dekompilacja / rekonstrukcja**, a nie oryginalne
 > źródło. Z surowego obrazu flash nie da się odzyskać nazw zmiennych, komentarzy
 > ani układu plików. Poziom pewności każdego fragmentu jest oznaczony w kodzie:
-> `[HW]` (dokładnie z rejestrów), `[LIB]` (procedura biblioteki BASCOM zastąpiona avr-libc),
+> `[HW]` (dokładnie z rejestrów), `[LIB]` (procedura biblioteczna zastąpiona odpowiednikiem z avr-libc),
 > `[REC]` (logika odtworzona z deasemblera + stringów + grafu wywołań).
 
 ## Sprzęt
@@ -33,16 +33,14 @@ include/  config.h            — konfiguracja sprzętowa (zegar, UART, piny)
 docs/     PROTOCOL.md         — ramki protokołu serwera + komendy AT/SMS
           MEMORY_MAP.md       — mapa rejestrów i adresów RAM/flash
           EEPROM.md           — mapa pól EEPROM (zweryfikowana ze zrzutem)
-          COMPILER.md         — rozpoznanie kompilatora (BASCOM-AVR)
 reverse/  flash.bin           — oryginalny obraz flash (materiał źródłowy)
           flash_disasm.txt    — pełny deasembler AVR do weryfikacji
 ```
 
 ## Budowanie
 
-Oryginalny firmware był napisany w **BASCOM-AVR** (BASIC) — szczegóły w
-`docs/COMPILER.md`. Rekonstrukcja w C buduje się toolchainem AVR
-(`avr-gcc`, `avr-libc`, `binutils-avr`):
+Oryginał skompilowano w BASCOM-AVR; rekonstrukcja jest w C i buduje się
+toolchainem AVR (`avr-gcc`, `avr-libc`, `binutils-avr`):
 
 ```bash
 make            # -> build/tracker.hex

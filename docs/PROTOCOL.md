@@ -77,8 +77,7 @@ Po przetworzeniu: `SMS IS CLEAR`. Brak wiadomości: `[Brak SMS]`.
 
 Serwer odsyła konfigurację jako napis, w którym każdy parametr siedzi pod
 **stałej pozycji znakowej** o znanej szerokości (nie ma separatorów). Firmware
-wycina pola procedurą `0xb7ee`, która działa jak BASIC-owe `Mid(s, poz, dł)`,
-a więc **pozycje liczone są od 1**. Wartości zamienia `Val()` (@0xb714).
+wycina pola procedurą `0xb7ee`, w której **pozycje liczone są od 1**. Wartości zamienia `Val()` (@0xb714).
 Odtworzona mapa (funkcja parsera @0x33b6):
 
 | # | poz. (od 1) | szer. | RAM     | uwagi                              |
