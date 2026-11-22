@@ -46,6 +46,7 @@
 #include <stddef.h>
 #include <util/delay.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdlib.h>
 
 /* ========================================================================== */
@@ -1014,10 +1015,47 @@ static void config_load_roaming_mode(void)
 }
 
 /* Wczytanie calej konfiguracji przy starcie. */
+/* Blokada adresu producenta — @0x7b4c, wolana przy kazdym starcie (@0x45a)
+ * PRZED polaczeniem z serwerem. Host musi miec dokladnie 25 znakow i postac
+ * "lgpsNN.monitoring-gps.net" (NN > 0, wielkosc liter bez znaczenia), port —
+ * 4 cyfry zaczynajace sie od "35". Inny adres (np. ustawiony SMS-em
+ * NEW*ADR=) jest zastepowany fabrycznym "lgps01.monitoring-gps.net" (0xbbe0)
+ * / "3506" i zapisywany do EEPROM.                                            */
+static void config_vendor_lock(void)
+{
+    char up[26];
+    uint8_t i, ok = (strlen(server_host) == 25);
+    if (ok) {
+        for (i = 0; i < 25; i++) up[i] = (char)toupper((unsigned char)server_host[i]);
+        up[25] = '\0';
+        ok = !strncmp_P(up, PSTR("LGPS"), 4)
+             && atoi((char[]){ up[4], up[5], 0 }) > 0
+             && !strcmp_P(up + 6, PSTR(".MONITORING-GPS.NET"));
+    }
+    if (strlen(server_host) == 25)
+        lcd_puts_P(ok ? PSTR("ADRES MEM OK") : PSTR("ADRES MEM ERROR"));
+    if (!ok) {
+        strcpy_P(server_host, PSTR(SERVER_DEFAULT));
+        config_save_host(server_host);
+    }
+    if (strlen(server_port_str) != 4) {
+        lcd_puts_P(PSTR("PORT MEM LEN ERROR"));
+        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));
+        config_save_port(server_port_str);
+    } else if (strncmp_P(server_port_str, PSTR("35"), 2) != 0) {
+        lcd_puts_P(PSTR("PORT MEM VAL ERROR"));
+        strcpy_P(server_port_str, PSTR(SERVER_PORT_DEFAULT));
+        config_save_port(server_port_str);
+    } else {
+        lcd_puts_P(PSTR("PORT MEM OK"));
+    }
+}
+
 static void config_load(void)
 {
     config_load_host();
     config_load_port();
+    config_vendor_lock();                  /* @0x45a -> 0x7b4c, przed polaczeniem */
     server_port = (uint16_t)atoi(server_port_str);
     config_load_motion();
     roam_op_idx = config_load_roam_op();

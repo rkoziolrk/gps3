@@ -38,9 +38,12 @@ XOR(`lgps03.monitoring-gps.net`) = `0x31` = bajt `0x2F`.
 **Port i host (0x01, 0x0A).** Przy odczycie: pusty napis albo niezgodna suma
 XOR → wartość domyślna z flasha (`3506`, `lgps01.monitoring-gps.net`) i zapis
 z powrotem. Urządzenie ze zrzutu łączy się z `lgps03.monitoring-gps.net:3506`.
-Osobna funkcja `@0x7c80` dodatkowo sprawdza długość portu (= 4) i wartość
-(`atoi ≠ 0`), wypisując `PORT MEM LEN ERROR` / `PORT MEM VAL ERROR`;
-prawdopodobnie waliduje nowy adres (np. z SMS `NEW*ADR=`).
+**Blokada adresu producenta** (`@0x7b4c`, przy każdym starcie, przed
+połączeniem): host musi mieć dokładnie 25 znaków i postać
+`lgpsNN.monitoring-gps.net` (NN > 0, wielkość liter bez znaczenia), port —
+4 cyfry zaczynające się od `35`. Inny adres jest zastępowany fabrycznym
+(`lgps01.monitoring-gps.net`, `3506`) i zapisywany do EEPROM; na LCD
+`ADRES MEM ERROR` / `PORT MEM LEN ERROR` / `PORT MEM VAL ERROR`.
 
 **Stan ruchu (0x3C).** Zapisywany przy przejściu w postój (`P`) i przed każdym
 restartem (bieżący stan z RAM `0x0266`), domyślnie `R`. Kopia trafia też do

@@ -2,6 +2,14 @@
 
 Wymagania odtworzone z firmware. Gotowa implementacja: `server/tracker_server.py`.
 
+## Blokada adresu w firmware
+
+Oryginalny firmware przy każdym starcie (`@0x7b4c`, przed połączeniem)
+zastępuje host spoza `lgpsNN.monitoring-gps.net` (dokładnie 25 znaków) oraz
+port spoza `35xx` adresem fabrycznym `lgps01.monitoring-gps.net:3506`.
+Własnego serwera nie da się ustawić samym SMS-em ani zapisem EEPROM — trzeba
+zmienić firmware (np. domyślny adres we flashu pod `0xbbe0`, jedyna kopia).
+
 ## Transport
 
 - Jedna sesja TCP na raz, kilka ramek w jednej sesji (najpierw `HSK-02`,

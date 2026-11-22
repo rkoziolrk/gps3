@@ -91,6 +91,10 @@ Odczyt `@0x80ac`, wykonanie `@0x84dc`, kasowanie `@0x883a` (`AT+CMGD=<n>,3`).
 | `RESET*<PIN>` / `RESET-<PIN>` | ustawienia fabryczne (`lgps01.monitoring-gps.net:3506`, tryb 3), skasowanie SMS, `KOMENDA RESET`, restart (kod 27) |
 | inny tekst | przy aktywnej sesji wysyłany na serwer jako `LOGUJ-;<IMEI>;<tekst>@` |
 
+- **Blokada adresu:** przy każdym starcie firmware (`@0x7b4c`) przyjmuje tylko
+  host `lgpsNN.monitoring-gps.net` i port `35xx`. Adres spoza tej domeny
+  ustawiony przez `NEW*ADR=` zostaje przy następnym starcie zastąpiony
+  fabrycznym `lgps01.monitoring-gps.net:3506` (`docs/EEPROM.md`).
 - **PIN** = 4 ostatnie cyfry IMEI (`Mid(IMEI,12,4)`, na LCD `PIN>`).
   `NEW*ADR=` PIN-u nie wymaga.
 - Przykład: `NEW*ADR=example.entrydns.org$3506$` — host najwyżej 35 znaków,
