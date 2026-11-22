@@ -54,6 +54,12 @@ void cfg_load(cfg_t *c)
     }
 }
 
+void cfg_reset(cfg_t *c)
+{
+    set_defaults(c);
+    cfg_save(c);
+}
+
 uint8_t cfg_set_server(cfg_t *c, const char *host, const char *port_str)
 {
     size_t hl = strlen(host);

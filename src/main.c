@@ -21,6 +21,8 @@
 #include "can.h"
 #include "track.h"
 #include "proto.h"
+#include "sms.h"
+#include "ota.h"
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
@@ -30,6 +32,43 @@
 #define PING_PERIOD 30        /* s między PING w stanie bezczynności */
 
 static cfg_t cfg;
+
+static void reboot(void)
+{
+    cli();
+    wdt_enable(WDTO_15MS);
+    for (;;)
+        ;
+}
+
+/* Callback odebranego SMS-a (po skasowaniu go z karty). Zmiana konfiguracji
+ * wymaga restartu, żeby zadziałała od nowej inicjalizacji. */
+static void on_sms(const char *body)
+{
+    char pin[5] = {0};
+    const char *im = gsm_imei();
+    uint8_t n = (uint8_t)strlen(im);
+    if (n >= 4) { memcpy(pin, im + n - 4, 4); pin[4] = '\0'; }
+
+    switch (sms_parse(body, &cfg, pin)) {
+    case SMS_SETADDR:
+        cfg_save(&cfg);
+        dbg_line("SMS", "nowy adres zapisany -> restart");
+        reboot();
+        break;
+    case SMS_RESET:
+        cfg_reset(&cfg);
+        dbg_line("SMS", "reset do fabrycznych -> restart");
+        reboot();
+        break;
+    case SMS_UPDATE:
+        dbg_line("SMS", "zadanie OTA -> bootloader");
+        ota_request();             /* ustawia flagę i restartuje do bootloadera */
+        break;
+    default:
+        break;                     /* zwykły tekst / zły format — ignoruj */
+    }
+}
 
 static void hw_init(void)
 {
@@ -43,7 +82,7 @@ static void hw_init(void)
     cfg_load(&cfg);
     gps_init();
     can_init();
-    gsm_init(&cfg);
+    gsm_init(&cfg, on_sms);
     track_init(&cfg);
 
     sei();
@@ -137,7 +176,7 @@ int main(void)
             last_led = now;
         }
 
-        /* TODO: odczyt SMS (AT+CMGR=1) i sms_parse() — do dołączenia w gsm.c. */
+        /* SMS (zmiana hosta / reset / OTA) obsługiwany w gsm_tick() -> on_sms(). */
 
         wdt_reset();
     }

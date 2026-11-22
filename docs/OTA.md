@@ -4,10 +4,12 @@ Cel: aktualizować firmware zdalnie (urządzenie w aucie), bez podłączania
 programatora. Wyzwalane SMS-em lub komendą z serwera; obraz pobierany po TCP
 przez SIM900.
 
-> **Status: projekt + część implementacji.** App-side (wyzwalacz, reboot) i
-> serwowanie obrazu przez serwer są gotowe i testowalne. Sam bootloader ma
-> gotowy rdzeń (SPM, CRC, skok do aplikacji, UART), a sekwencja modemu i pętla
-> pobierania **wymagają dostrojenia na stole** przed użyciem w terenie.
+> **Status: łańcuch kompletny w kodzie.** Wyzwalacz SMS (`FWUPD*<PIN>`) czyta
+> się w `gsm.c` i woła `ota_request()`; serwer serwuje obraz (`--fw`); bootloader
+> pobiera i zapisuje przez SPM z weryfikacją CRC32 (zgodny z serwerem). Rdzeń
+> bootloadera (SPM, CRC, skok, UART) jest pewny; **sekwencja modemu i pętla
+> pobierania wymagają dostrojenia na stole** przed zaufaniem w terenie. Zalecany
+> pierwszy test OTA: na biurku, z podglądem logu na USART0.
 
 ## Zasada bezpieczeństwa (najważniejsze)
 

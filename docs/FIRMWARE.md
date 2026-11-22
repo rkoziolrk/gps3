@@ -58,7 +58,6 @@ baku — `docs/CAN.md`).
 ## Do zrobienia przed/po bring-upie (TODO w kodzie)
 
 - poziomy czynne pinów PWRKEY/enable (GSM/GPS/CAN) i czasy sekwencji zasilania,
-- odczyt SMS (`AT+CMGR=1`) i `sms_parse()` — hak w `main.c`,
 - pełna tabela roamingu (`docs/ROAMING.md`) w `roam.c`,
 - bufor rekordów offline (gdy brak zasięgu) — pamięć zewn. I2C,
 - dostrojenie progów logowania na realnej jeździe,

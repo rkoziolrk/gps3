@@ -7,7 +7,10 @@
 #include <stdint.h>
 #include "cfg_store.h"
 
-void        gsm_init(const cfg_t *c);
+/* sms_cb: wywoływane z treścią odebranego SMS-a (po skasowaniu go z karty),
+ * gdy na pozycji 1 był SMS. Może nie wrócić (reboot przy zmianie konfiguracji
+ * / OTA). NULL = nie czytaj SMS. */
+void        gsm_init(const cfg_t *c, void (*sms_cb)(const char *body));
 void        gsm_tick(uint32_t uptime);        /* napędza sekwencję/timeouty     */
 void        gsm_feed(const char *line);       /* konsumuje odpowiedzi modemu     */
 

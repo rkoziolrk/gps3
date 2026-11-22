@@ -24,6 +24,7 @@ typedef struct {
 /* Wczytaj z EEPROM; przy złej sumie/niezainicjowanym — ustaw domyślne i zapisz. */
 void   cfg_load(cfg_t *c);
 void   cfg_save(const cfg_t *c);
+void   cfg_reset(cfg_t *c);        /* przywróć domyślne i zapisz (RESET SMS)  */
 
 /* Ustaw host+port z kontrolą długości; zwraca 1 gdy OK, 0 gdy odrzucono. */
 uint8_t cfg_set_server(cfg_t *c, const char *host, const char *port_str);
