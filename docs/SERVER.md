@@ -110,17 +110,17 @@ Przykład rekordu (dane zmyślone):
 | czas UTC `hhmmss` | 6 | `101500` | 10:15:00 | wysoka |
 | data `ddmmrr` | 6 | `010126` | 01.01.2026 | wysoka |
 | ogon | 5 | `00010` | licznik/flagi, nieustalone | niska |
-| `!` sekcja CAN | 22 | (paliwo/RPM/pedał/sonda) | | niska |
-| `!` sekcja CAN | 11 | `+<…>` | j.w. | niska |
+| `!` sekcja CAN | 22 | prędkość/pedał/przebieg + pola nieustalone | | niska |
+| `!` sekcja CAN | 11 | `+99` + pola nieustalone | j.w. | niska |
 
 Rekord z błędnym bajtem serwer oznacza jako „nieczytelny”; część pozycyjną
 dekoduje `decode_record()`.
 
 ### Sekcje CAN (z logu jazdy, CAN podłączony)
 
-Dwie sekcje po `!`. Układ i znaczenia potwierdzone na przejeździe (Audi A4 B8
-2.0 TDI, 12 V). Pojawiają się tylko przy włączonym zapłonie — z wyłączonym
-są puste.
+Dwie sekcje po `!`, z przejazdu Audi A4 B8 2.0 TDI (12 V). Pojawiają się tylko
+przy włączonym zapłonie — z wyłączonym są puste. **Potwierdzone** są tylko
+prędkość, pedał i przebieg; pozostałe pola to na razie surowe liczby.
 
 **CAN1 (22 znaki):** np. `0450270601680012345600`
 
@@ -129,12 +129,21 @@ są puste.
 | prędkość CAN | 0 | 3 | `045` | km/h z magistrali (koreluje z GPS) | wysoka |
 | pedał gazu | 3 | 4 | `0270` | 0 = puszczony, rośnie przy przyspieszaniu | wysoka |
 | stała | 7 | 1 | `6` | nieustalone (zawsze 6) | — |
-| zużycie chwilowe | 8 | 4 | `0168` | wysokie na biegu jałowym, niskie w jeździe | średnia |
-| przebieg | 12 | 10 | `0012345600` | w **metrach** (/1000 = km) | wysoka |
+| pole A (`?A`) | 8 | 4 | `0168` | zmienia się szybko, odwrotnie do prędkości — **nieustalone** | niska |
+| przebieg | 12 | 10 | `0012345600` | w **metrach** (/1000 = km, zgodny z licznikiem) | wysoka |
 
-**CAN2 (11 znaków):** `+99` + `<paliwo 4>` + `<status 4>`, np. `+9902800000`:
-- `fuel` (`0280`, /10 = **28.0 L paliwa w baku**; `0000` = zapłon wyłączony) — wysoka,
-- `stat` (`0000` / `0061`, kod/status, np. przy wyłączaniu) — niepewne.
+**CAN2 (11 znaków):** `+99` + dwa pola 4-znakowe, np. `+9902870000`:
+- pole B (`?B`): `0287` przy pracującym silniku, `0000` przy wyłączonym zapłonie — **nieustalone**,
+- `stat` (`0000` / `0061`) — nieustalone.
+
+> **Uwaga — to NIE jest poziom paliwa.** Wcześniej pole B (`0287`) brałem za
+> paliwo (≈28,7 L), ale przy prawie pełnym baku to się nie zgadza — żadne pole
+> w rekordzie nie odpowiada rzeczywistemu poziomowi paliwa. W trakcie jednego
+> krótkiego przejazdu poziom paliwa jest praktycznie stały, więc nie da się go
+> odróżnić od innych stałych pól. Żeby go wskazać, potrzebny jest **drugi log
+> przy wyraźnie innym poziomie baku** (albo liczba, którą pokazywała oryginalna
+> platforma) — wtedy pole, które się zmieni proporcjonalnie do zużytego paliwa,
+> będzie poziomem paliwa.
 
 RPM w rekordzie **nie występuje** (w oryginale szło tylko na wyświetlacz).
 

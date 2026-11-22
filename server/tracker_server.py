@@ -178,11 +178,11 @@ def decode_can(c1, c2):
         out["can_speed"] = c1[0:3]      # prędkość z CAN [km/h] (koreluje z GPS)
         out["pedal"] = c1[3:7]          # pedał gazu (0 = puszczony)
         out["_k"] = c1[7:8]             # stała '6' — nieustalone
-        out["cons"] = c1[8:12]          # zużycie chwilowe (wysokie na jałowym, niskie w jeździe)
-        out["odo"] = c1[12:22]          # przebieg w metrach (/1000 = km, potwierdzone)
+        out["f_a"] = c1[8:12]           # zmienna szybko, odwrotnie do prędkości — nieustalone
+        out["odo"] = c1[12:22]          # przebieg w metrach (/1000 = km, POTWIERDZONE)
     if len(c2) == 11 and c2[0] == "+":
-        out["fuel"] = c2[3:7]           # poziom paliwa w baku (~28.7 L); 0000 = zapłon off
-        out["stat"] = c2[7:11]          # status/kod
+        out["f_b"] = c2[3:7]            # stabilne przy pracującym silniku — nieustalone (NIE paliwo)
+        out["stat"] = c2[7:11]          # status/kod — nieustalone
     return out
 
 
@@ -213,9 +213,8 @@ def describe_record(rec):
     t, dt = r["utc"], r["date"]
     when = f"{dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]}" if len(t) == 6 and len(dt) == 6 else "?"
     if "can_speed" in r:
-        fuel = int(r["fuel"]) / 10 if r.get("fuel") else 0
         can = (f"CAN[v={int(r['can_speed'])} ped={int(r['pedal'])} "
-               f"zuzycie={int(r['cons'])} przebieg={int(r['odo'])/1000:.1f}km bak={fuel:.1f}L]")
+               f"przebieg={int(r['odo'])/1000:.1f}km  ?A={r['f_a']} ?B={r.get('f_b', '')}]")
     elif r["can1"] or r["can2"]:
         can = f"CAN=[{r['can1']}|{r['can2']}]"
     else:
