@@ -25,6 +25,9 @@ void uart1_send_line(const char *s);     /* dodaje CR                          *
  */
 int uart1_get_line(char *dst, uint8_t dstsize);
 
+/* Zwraca 1 (i kasuje), jeśli pojawił się znak zachęty '>' (AT+CIPSEND). */
+uint8_t uart1_got_prompt(void);
+
 /* --- USART0: debug ------------------------------------------------------- */
 void uart0_putc(char c);
 void uart0_puts(const char *s);

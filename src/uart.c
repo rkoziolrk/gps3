@@ -54,6 +54,7 @@ static volatile uint8_t rx_len;
 static volatile char    ready_buf[UART_LINE_MAX];
 static volatile uint8_t ready_len;
 static volatile uint8_t ready_flag;
+static volatile uint8_t prompt_flag;      /* '>' od AT+CIPSEND (bez CR) */
 
 ISR(USART1_RX_vect)
 {
@@ -63,6 +64,10 @@ ISR(USART1_RX_vect)
     /* Odrzuć znak z błędem ramki/przepełnienia (FE1/DOR1). */
     if (s & ((1 << FE1) | (1 << DOR1)))
         return;
+
+    /* Znak zachęty '>' przychodzi bez CR — wykryj natychmiast. */
+    if (c == '>')
+        prompt_flag = 1;
 
     if (c == '\r') {
         /* Koniec linii: oddaj do bufora wymiany (pomiń puste). */
@@ -82,6 +87,16 @@ ISR(USART1_RX_vect)
             rx_buf[rx_len++] = c;
         /* przepełnienie: nadmiar ucinany, linia dokończy się na CR */
     }
+}
+
+uint8_t uart1_got_prompt(void)
+{
+    uint8_t p;
+    cli();
+    p = prompt_flag;
+    prompt_flag = 0;
+    sei();
+    return p;
 }
 
 int uart1_get_line(char *dst, uint8_t dstsize)

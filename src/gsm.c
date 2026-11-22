@@ -38,7 +38,7 @@ static uint8_t      sms_have;        /* złapano treść SMS                    
 static char         sms_body[80];
 
 /* Flagi ustawiane przez gsm_feed(), czytane przez gsm_tick(). */
-static volatile uint8_t f_ok, f_err, f_connect, f_prompt, f_sendok, f_closed;
+static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
 
 #define STEP_TIMEOUT   10
 #define MAX_RETRIES     3
@@ -155,7 +155,6 @@ void gsm_feed(const char *line)
     if (!strncmp(line, "CONNECT OK", 10))     f_connect = 1;
     if (!strncmp(line, "ALREADY CONNECT", 15))f_connect = 1;
     if (!strncmp(line, "SEND OK", 7))         f_sendok = 1;
-    if (!strncmp(line, "> ", 2) || line[0] == '>') f_prompt = 1;
     if (!strncmp(line, "CLOSED", 6) || !strncmp(line, "CONNECT FAIL", 12)) f_closed = 1;
 }
 
@@ -218,7 +217,7 @@ void gsm_tick(uint32_t now)
         if (f_closed) { f_closed = 0; dbg_line("GSM", "TCP CLOSED -> reconnect"); state = G_SEQ; step = STEP_LAST; step_t0 = 0; return; }
         if (has_pending) {
             gsm_route(1);               /* wysyłka -> słuchaj modemu */
-            f_prompt = 0;
+            uart1_got_prompt();         /* skasuj ewentualny stary '>' */
             uart1_send_line("AT+CIPSEND");
             step_t0 = now;
             state = G_SEND_PROMPT;
@@ -228,7 +227,7 @@ void gsm_tick(uint32_t now)
         break;
 
     case G_SEND_PROMPT:
-        if (f_prompt) {
+        if (uart1_got_prompt()) {
             uart1_puts(pending);
             uart1_putc(0x1A);
             f_sendok = 0;
