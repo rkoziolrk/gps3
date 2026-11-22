@@ -25,17 +25,35 @@ urządzenie zapisuje nowy adres i się restartuje.
 import argparse
 import asyncio
 import datetime
+import os
 import sys
 
 LOG_FILE = None
 
+# --- kolory w terminalu (plik logu zawsze bez kolorów) -----------------------
+USE_COLOR = False
+RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
+RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN = (f"\033[3{n}m" for n in (1, 2, 3, 4, 5, 6))
 
-def log(msg):
-    line = f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
+FRAME_COLORS = {"HSK": MAGENTA, "CONFIG": BLUE, "PNG": CYAN, "LOK": GREEN,
+                "LOGUJ-": YELLOW, "AUTO--": YELLOW, "NIEZNANA": RED, "BŁĄD:": RED}
+
+
+def paint(text, *codes):
+    codes = [c for c in codes if c]
+    return "".join(codes) + text + RESET if USE_COLOR and codes else text
+
+
+def log(msg, *codes):
+    stamp = f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}]"
+    first, *rest = msg.split("\n")
+    out = [paint(stamp, DIM) + " " + paint(first, *codes)]
+    for line in rest:                       # dalsze linie bloku (rekordy LOK)
+        out.append(paint(line, GREEN) if line.lstrip().startswith("->") else paint(line, DIM))
+    print("\n".join(out), flush=True)
     if LOG_FILE:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+            f.write(f"{stamp} {msg}\n")
 
 
 def xor_sum(text):
@@ -199,45 +217,45 @@ def handle_frame(frame, args):
 async def client(reader, writer, args):
     peer = writer.get_extra_info("peername")
     who = f"{peer[0]}:{peer[1]}" if peer else "?"
-    log(f"Połączenie od {who}")
+    log(f"Połączenie od {who}", BOLD, CYAN)
     try:
         while True:
             try:
                 raw = await asyncio.wait_for(reader.readuntil(b"\n"), args.idle_timeout)
             except asyncio.IncompleteReadError as e:
                 if e.partial:
-                    log(f"[{who}] niepełna ramka przed rozłączeniem: {e.partial!r}")
+                    log(f"[{who}] niepełna ramka przed rozłączeniem: {e.partial!r}", YELLOW)
                 break
             except asyncio.LimitOverrunError:
                 raw = await reader.read(65536)
-                log(f"[{who}] za długa linia, RAW: {raw!r}")
+                log(f"[{who}] za długa linia, RAW: {raw!r}", YELLOW)
                 continue
             except asyncio.TimeoutError:
-                log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam")
+                log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam", YELLOW)
                 break
 
-            log(f"[{who}] RAW: {raw!r}")
+            log(f"[{who}] RAW: {raw!r}", DIM)
             frame = raw.decode("latin-1").strip("\r\n\x00\x1a ")
             if not frame:
                 continue
             try:
                 info, reply = handle_frame(frame, args)
             except Exception as e:                  # błąd jednej ramki nie zabija serwera
-                log(f"[{who}] błąd obsługi ramki: {e!r}")
+                log(f"[{who}] błąd obsługi ramki: {e!r}", BOLD, RED)
                 info, reply = f"BŁĄD: {frame}", "{OK}"
-            log(f"[{who}] {info}")
+            log(f"[{who}] {info}", BOLD, FRAME_COLORS.get(info.split()[0]))
             writer.write(reply.encode("latin-1"))
             await writer.drain()
-            log(f"[{who}] odpowiedź: {reply}")
+            log(f"[{who}] odpowiedź: {reply}", GREEN)
     except (ConnectionResetError, BrokenPipeError) as e:
-        log(f"[{who}] połączenie zerwane: {e!r}")
+        log(f"[{who}] połączenie zerwane: {e!r}", RED)
     finally:
         writer.close()
-        log(f"Rozłączono {who}")
+        log(f"Rozłączono {who}", CYAN)
 
 
 async def main():
-    global LOG_FILE
+    global LOG_FILE, USE_COLOR
     ap = argparse.ArgumentParser(description="Serwer testowy lokalizatora GPS")
     ap.add_argument("--listen", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=3506, help="port nasłuchu")
@@ -250,13 +268,17 @@ async def main():
     ap.add_argument("--config-interval", type=int, default=3600)
     ap.add_argument("--idle-timeout", type=int, default=600)
     ap.add_argument("--log-file", default="tracker_server.log")
+    ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
     args = ap.parse_args()
     LOG_FILE = args.log_file
+    USE_COLOR = sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
+    if USE_COLOR and os.name == "nt":
+        os.system("")                       # włącza kody ANSI w konsoli Windows
 
     hsk_reply(args.device_host, args.device_port)       # walidacja argumentów
     server = await asyncio.start_server(lambda r, w: client(r, w, args),
                                         args.listen, args.port)
-    log(f"Nasłuch na {args.listen}:{args.port}  (HSK odsyła {args.device_host}:{args.device_port})")
+    log(f"Nasłuch na {args.listen}:{args.port}  (HSK odsyła {args.device_host}:{args.device_port})", BOLD, GREEN)
     async with server:
         await server.serve_forever()
 
@@ -265,6 +287,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log("Zatrzymano przez Ctrl+C")
+        log("Zatrzymano przez Ctrl+C", YELLOW)
     except ValueError as e:
         sys.exit(f"Błąd: {e}")

@@ -92,6 +92,11 @@ python3 tracker_server.py --port 3506 --device-host example.entrydns.org
 python3 test_client.py --port 3506 --device-host example.entrydns.org
 ```
 
+Oba skrypty kolorują wyjście w terminalu (typy ramek, rozkodowane pozycje,
+wynik sprawdzeń). Kolory wyłącza `--no-color` albo zmienna `NO_COLOR`; przy
+przekierowaniu do pliku lub potoku wyłączają się same, a plik logu serwera
+jest zawsze bez kodów kolorów.
+
 Uwaga: suma XOR jest słaba — dwa takie same przekłamania bitu się znoszą
 (test pokazuje to na przykładzie separatorów `;` → `:`, które firmware i tak
 pomija).

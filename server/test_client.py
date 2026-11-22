@@ -10,9 +10,19 @@ Układ rekordu pozycji jest prawdopodobny (docs/SERVER.md, "Ramka LOK").
 """
 
 import argparse
+import os
 import socket
 import sys
 import time
+
+# --- kolory w terminalu ------------------------------------------------------
+USE_COLOR = False
+RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
+RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN = (f"\033[3{n}m" for n in (1, 2, 3, 4, 5, 6))
+
+
+def paint(text, *codes):
+    return "".join(codes) + str(text) + RESET if USE_COLOR and codes else str(text)
 
 IMEI = "000000000000000"
 
@@ -117,7 +127,11 @@ class Device:
 
 
 def step(n, title):
-    print(f"\n--- krok {n}: {title}")
+    print("\n" + paint(f"--- krok {n}: {title}", BOLD, CYAN))
+
+
+def show(label, value, *codes):
+    print(f"    {label:11}", paint(value, *codes))
 
 
 def run_session(args):
@@ -126,14 +140,14 @@ def run_session(args):
     step(1, "HSK-02 (wysłane w 2 kawałkach)")
     dev.send(f"HSK-02;{IMEI};2.65;ORANGE;MT02-51083;SIM900;FGP;260;03;0;0;PA6C;1;TEMP;R26;B13\r\n", chunks=2)
     r = capture(dev.reply())
-    print("    odpowiedź:", r)
-    print("    firmware:", check_hsk(r, args.device_host, args.device_port))
+    show("odpowiedź:", r, DIM)
+    show("firmware:", "✓ " + check_hsk(r, args.device_host, args.device_port), GREEN)
 
     step(2, "CONFIG")
     dev.send(f"CONFIG;{IMEI};05\r\n")
     r = capture(dev.reply())
-    print("    odpowiedź:", r)
-    print("    firmware:", check_cfg(r))
+    show("odpowiedź:", r, DIM)
+    show("firmware:", "✓ " + check_cfg(r), GREEN)
     per_frame = int(r[17]) or 6
 
     step(3, f"jazda: {len(ROUTE)} punktów, ramka LOK co {per_frame} rekordy")
@@ -141,9 +155,11 @@ def run_session(args):
     for i in range(0, len(recs), per_frame):
         batch = recs[i:i + per_frame]
         frame = f"LOK-02;{IMEI}$" + "".join(x + "$" for x in batch) + "\r\n"
-        print(f"    wysyłam LOK z {len(batch)} rekordami: {frame.strip()}")
+        show("wysyłam:", f"LOK z {len(batch)} rekordami", YELLOW)
+        show("", frame.strip(), DIM)
         dev.send(frame)
-        print("    firmware:", check_ok(capture(dev.reply()), "LOK"), "-> rekordy skasowane jako wysłane")
+        show("firmware:", "✓ " + check_ok(capture(dev.reply()), "LOK")
+             + " -> rekordy skasowane jako wysłane", GREEN)
 
     step(4, "PNG-01 (stan) i LOGUJ (komunikat) w jednym pakiecie")
     dev.send(f"PNG-01;{IMEI};CAN;25;FORM;Er=000/000;A=1 CAN=1 R=3/3 DP=0 OD=0 DS=01 "
@@ -151,38 +167,42 @@ def run_session(args):
     buf = dev.reply()
     while buf.count("}") < 2:
         buf += dev.s.recv(4096).decode("latin-1")
-    print("    odpowiedzi:", buf, "->", check_ok(capture(buf), "PNG"))
+    show("odpowiedzi:", buf, DIM)
+    show("firmware:", "✓ " + check_ok(capture(buf), "PNG") + " (na obie ramki)", GREEN)
 
     dev.close()
-    print("\nsesja zakończona — połączenie zamknęło urządzenie, nie serwer")
+    print("\n" + paint("sesja zakończona — połączenie zamknęło urządzenie, nie serwer", CYAN))
 
 
 def run_negative(args):
-    print("\n=== test odwrotny: czy reguły odrzucają złe odpowiedzi ===")
-    sys.path.insert(0, __import__("os").path.dirname(__file__))
+    print("\n" + paint("=== test odwrotny: czy reguły odrzucają złe odpowiedzi ===", BOLD, CYAN))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import tracker_server as srv
     good = srv.hsk_reply(args.device_host, args.device_port)
-    cases = [
-        ("odpowiedź 'OK\\r\\n' (bez klamer)", "OK\r\n", "hsk"),
-        ("poprawna odpowiedź HSK", good, "hsk"),
-        ("HSK z jednym zmienionym znakiem", good[:12] + chr(ord(good[12]) ^ 0x01) + good[13:], "hsk"),
+    cases = [  # (opis, odpowiedź, rodzaj, czy firmware powinien przyjąć)
+        ("odpowiedź 'OK\\r\\n' (bez klamer)", "OK\r\n", "hsk", False),
+        ("poprawna odpowiedź HSK", good, "hsk", True),
+        ("HSK z jednym zmienionym znakiem", good[:12] + chr(ord(good[12]) ^ 0x01) + good[13:], "hsk", False),
         # Dwa takie same przekłamania bitu znoszą się w sumie XOR, a separatorów
         # (poz. 4 i 9) firmware nie sprawdza — urządzenie też by to przyjęło.
-        ("HSK: oba separatory ';'->':' (XOR*)", good.replace(";", ":", 2), "hsk-ok"),
-        ("HSK z innym hostem", srv.hsk_reply("inny.host.pl", args.device_port), "hsk"),
-        ("HSK krótsza o 1 znak", good[:-2] + "}", "hsk"),
-        ("CONFIG z popsutą sumą", srv.config_reply()[:-4] + "000}", "cfg"),
+        ("HSK: oba separatory ';'->':' (XOR*)", good.replace(";", ":", 2), "hsk", True),
+        ("HSK z innym hostem", srv.hsk_reply("inny.host.pl", args.device_port), "hsk", False),
+        ("HSK krótsza o 1 znak", good[:-2] + "}", "hsk", False),
+        ("CONFIG z popsutą sumą", srv.config_reply()[:-4] + "000}", "cfg", False),
     ]
     failed = 0
-    for name, reply, kind in cases:
+    for name, reply, kind, expect_accept in cases:
         r = capture(reply)
         try:
-            res = check_hsk(r, args.device_host, args.device_port) if kind.startswith("hsk") else check_cfg(r)
-            print(f"  PRZESZŁO    {name:36} -> {res}")
-            failed += name.startswith(("odpowiedź 'OK", "HSK z", "HSK k", "CONFIG z"))
+            res = check_hsk(r, args.device_host, args.device_port) if kind == "hsk" else check_cfg(r)
+            accepted, verdict = True, "PRZYJĘTO "
         except AssertionError as e:
-            print(f"  ODRZUCONO   {name:36} -> {e}")
-    print("  (*) słabość sumy XOR w firmware, nie błąd serwera")
+            res, accepted, verdict = str(e), False, "ODRZUCONO"
+        ok = accepted == expect_accept
+        failed += not ok
+        mark = paint("✓", GREEN) if ok else paint("✗", BOLD, RED)
+        print(f"  {mark} {paint(verdict, GREEN if ok else RED)}  {name:36} -> {paint(res, DIM)}")
+    print(paint("  (*) słabość sumy XOR w firmware, nie błąd serwera", YELLOW))
     return failed
 
 
@@ -192,11 +212,18 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=3506)
     ap.add_argument("--device-host", required=True)
     ap.add_argument("--device-port", default="3506")
+    ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
     a = ap.parse_args()
+    USE_COLOR = sys.stdout.isatty() and not a.no_color and "NO_COLOR" not in os.environ
+    if USE_COLOR and os.name == "nt":
+        os.system("")                       # włącza kody ANSI w konsoli Windows
     try:
         run_session(a)
     except AssertionError as e:
-        sys.exit(f"\nBŁĄD: {e}")
+        sys.exit("\n" + paint(f"BŁĄD: {e}", BOLD, RED))
+    except OSError as e:
+        sys.exit(paint(f"BŁĄD: nie można połączyć się z {a.server}:{a.port} ({e.strerror or e})"
+                       " — czy serwer działa?", BOLD, RED))
     if run_negative(a):
-        sys.exit("\nBŁĄD: reguła przepuściła złą odpowiedź")
-    print("\nwszystkie sprawdzenia zgodne z oczekiwaniami")
+        sys.exit("\n" + paint("BŁĄD: wynik niezgodny z oczekiwaniami", BOLD, RED))
+    print("\n" + paint("✓ wszystkie sprawdzenia zgodne z oczekiwaniami", BOLD, GREEN))
