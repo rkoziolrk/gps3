@@ -30,6 +30,11 @@ import sys
 
 LOG_FILE = None
 
+# Poziom gadatliwości terminala: 0=cicho, 1=normalnie, 2=-v (surowe bajty),
+# 3=-vv (rozbicie pól). Plik logu dostaje zawsze poziom >= 2.
+VERBOSITY = 1
+FILE_LEVEL = 2
+
 # --- kolory w terminalu (plik logu zawsze bez kolorów) -----------------------
 USE_COLOR = False
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
@@ -50,14 +55,18 @@ def safe(text):
                    for c in text)
 
 
-def log(msg, *codes):
+def log(msg, *codes, level=1):
+    """level = minimalna gadatliwość, przy której wpis trafia na terminal."""
+    if level > VERBOSITY and level > FILE_LEVEL:
+        return
     stamp = f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}]"
-    first, *rest = msg.split("\n")
-    out = [paint(stamp, DIM) + " " + paint(first, *codes)]
-    for line in rest:                       # dalsze linie bloku (rekordy LOK)
-        out.append(paint(line, GREEN) if line.lstrip().startswith("->") else paint(line, DIM))
-    print("\n".join(out), flush=True)
-    if LOG_FILE:
+    if level <= VERBOSITY:
+        first, *rest = msg.split("\n")
+        out = [paint(stamp, DIM) + " " + paint(first, *codes)]
+        for line in rest:                   # dalsze linie bloku (rekordy LOK)
+            out.append(paint(line, GREEN) if line.lstrip().startswith("->") else paint(line, DIM))
+        print("\n".join(out), flush=True)
+    if LOG_FILE and level <= FILE_LEVEL:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"{stamp} {msg}\n")
 
@@ -186,19 +195,33 @@ def describe_record(rec):
 # ---------------------------------------------------------------------------
 # Obsługa ramek
 # ---------------------------------------------------------------------------
+HSK_FIELDS = ["wersja", "operator", "model", "modem", "typ", "MCC", "MNC",
+              "?", "?", "GPS", "?", "temp", "?", "?", "wer.modemu"]
+
+
+def detail(lines):
+    """Dodatkowe linie pokazywane tylko przy -vv (VERBOSITY >= 3)."""
+    return ("\n    " + "\n    ".join(lines)) if VERBOSITY >= 3 and lines else ""
+
+
 def handle_frame(frame, args):
     """Zwraca (opis do logu, odpowiedź do wysłania)."""
     if frame.startswith("HSK-02;"):
         p = frame.split(";")
         info = f"HSK  IMEI={p[1] if len(p) > 1 else '?'}  " + ";".join(p[2:])
+        info += detail(f"{n:14}= {v}" for n, v in zip(HSK_FIELDS, p[2:]))
         return info, hsk_reply(args.device_host, args.device_port)
 
     if frame.startswith("CONFIG;"):
         p = frame.split(";")
-        return f"CONFIG  IMEI={p[1] if len(p) > 1 else '?'}", config_reply(
-            {25: str(args.roaming_mode),
-             6: f"{args.session_interval:05d}",
-             12: f"{args.config_interval:05d}"})
+        reply = config_reply({25: str(args.roaming_mode),
+                              6: f"{args.session_interval:05d}",
+                              12: f"{args.config_interval:05d}"})
+        info = f"CONFIG  IMEI={p[1] if len(p) > 1 else '?'}"
+        info += detail([f"wysyłam: {reply}"]
+                       + [f"poz.{pos:<3}szer.{w}= {reply[pos:pos + w]!r}  {desc}"
+                          for pos, w, _, desc in CONFIG_FIELDS])
+        return info, reply
 
     if frame.startswith("PNG-01;"):
         p = frame.split(";")
@@ -206,6 +229,7 @@ def handle_frame(frame, args):
         er = next((x[3:] for x in p if x.startswith("Er=")), "?")
         info = (f"PNG  IMEI={p[1] if len(p) > 1 else '?'}  "
                 f"kody_restartu(PL/inne)={er}  stan={p[-1] if len(p) > 6 else ''}")
+        info += detail(f"{x}" for x in p[2:])
         return info, "{OK}"
 
     if frame.startswith(("LOK-02;", "LOO-02;")):
@@ -216,6 +240,9 @@ def handle_frame(frame, args):
         for i, r in enumerate(records):
             lines.append(f"    rekord {i + 1}: {r}")
             lines.append(f"              -> {describe_record(r)}")
+            if VERBOSITY >= 3:
+                d = decode_record(r)
+                lines += [f"        {k:6}= {d.get(k, '')}" for k, _ in POS_LAYOUT]
         return "\n".join(lines), "{OK}"
 
     if frame.startswith(("LOO-BE;", "LOO-EN;")):
@@ -247,26 +274,26 @@ def handle_frame(frame, args):
 
 async def answer(frame_raw, who, writer, args):
     """Obsłuż jedną kompletną ramkę (zakończoną '\\n') i odeślij odpowiedź."""
-    log(f"[{who}] ramka: {frame_raw!r}", DIM)
+    log(f"[{who}] ramka: {frame_raw!r}", DIM, level=2)
     frame = frame_raw.decode("latin-1").strip("\r\n\x00\x1a ")
     if not frame:
-        log(f"[{who}] pusta linia — pomijam", YELLOW)
+        log(f"[{who}] pusta linia — pomijam", YELLOW, level=2)
         return
     try:
         info, reply = handle_frame(frame, args)
     except Exception as e:                  # błąd jednej ramki nie zabija serwera
-        log(f"[{who}] błąd obsługi ramki: {e!r}", BOLD, RED)
+        log(f"[{who}] błąd obsługi ramki: {e!r}", BOLD, RED, level=0)
         info, reply = f"BŁĄD: {frame}", "{OK}"
-    log(f"[{who}] {safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]))
+    log(f"[{who}] {safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]), level=0)
     writer.write(reply.encode("latin-1"))
     await writer.drain()
-    log(f"[{who}] odpowiedź: {reply}", GREEN)
+    log(f"[{who}] odpowiedź: {reply}", GREEN, level=1)
 
 
 async def client(reader, writer, args):
     peer = writer.get_extra_info("peername")
     who = f"{peer[0]}:{peer[1]}" if peer else "?"
-    log(f"Połączenie od {who}", BOLD, CYAN)
+    log(f"Połączenie od {who}", BOLD, CYAN, level=0)
     loop = asyncio.get_running_loop()
     buf = b""                               # dane jeszcze bez '\n'
     total = frames = 0
@@ -279,10 +306,10 @@ async def client(reader, writer, args):
             except asyncio.TimeoutError:
                 idle = loop.time() - last_rx
                 if buf and not warned and idle >= args.partial_warn:
-                    log(f"[{who}] niepełna ramka (brak \\r\\n od {idle:.0f} s): {buf!r}", BOLD, YELLOW)
+                    log(f"[{who}] niepełna ramka (brak \\r\\n od {idle:.0f} s): {buf!r}", BOLD, YELLOW, level=0)
                     warned = True
                 if idle >= args.idle_timeout:
-                    log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam", YELLOW)
+                    log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam", YELLOW, level=1)
                     break
                 continue
 
@@ -293,7 +320,7 @@ async def client(reader, writer, args):
             total += len(chunk)
             last_rx = loop.time()
             warned = False
-            log(f"[{who}] odebrano {len(chunk)} B: {chunk!r}", DIM)
+            log(f"[{who}] odebrano {len(chunk)} B: {chunk!r}", DIM, level=2)
 
             buf += chunk
             while b"\n" in buf:
@@ -301,22 +328,22 @@ async def client(reader, writer, args):
                 frames += 1
                 await answer(line + b"\n", who, writer, args)
             if len(buf) > 65536:
-                log(f"[{who}] ponad 64 KiB bez \\r\\n — odrzucam bufor: {buf[:200]!r}...", BOLD, RED)
+                log(f"[{who}] ponad 64 KiB bez \\r\\n — odrzucam bufor: {buf[:200]!r}...", BOLD, RED, level=0)
                 buf = b""
     except (ConnectionResetError, BrokenPipeError) as e:
-        log(f"[{who}] połączenie zerwane: {e!r}", RED)
+        log(f"[{who}] połączenie zerwane: {e!r}", RED, level=1)
     finally:
         writer.close()
         if buf:
-            log(f"[{who}] niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW)
+            log(f"[{who}] niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW, level=0)
         if total == 0:
-            log(f"Rozłączono {who} — nie przyszedł ani jeden bajt", BOLD, YELLOW)
+            log(f"Rozłączono {who} — nie przyszedł ani jeden bajt", BOLD, YELLOW, level=0)
         else:
-            log(f"Rozłączono {who} — odebrano {total} B, ramek: {frames}", CYAN)
+            log(f"Rozłączono {who} — odebrano {total} B, ramek: {frames}", CYAN, level=0)
 
 
 async def main():
-    global LOG_FILE, USE_COLOR
+    global LOG_FILE, USE_COLOR, VERBOSITY, FILE_LEVEL
     ap = argparse.ArgumentParser(description="Serwer testowy lokalizatora GPS")
     ap.add_argument("--listen", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=3506, help="port nasłuchu")
@@ -333,7 +360,13 @@ async def main():
                     help="ostrzeż, gdy dane bez \\r\\n czekają w buforze tyle sekund")
     ap.add_argument("--log-file", default="tracker_server.log")
     ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
+    ap.add_argument("-v", "--verbose", action="count", default=0,
+                    help="więcej szczegółów: -v surowe bajty, -vv rozbicie pól")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="tylko połączenia, ramki i błędy (bez odpowiedzi i surowych bajtów)")
     args = ap.parse_args()
+    VERBOSITY = 0 if args.quiet else 1 + args.verbose       # 0=cicho,1=norm,2=-v,3=-vv
+    FILE_LEVEL = max(2, VERBOSITY)                           # plik logu: zawsze >= 2
     LOG_FILE = args.log_file
     USE_COLOR = sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
     if USE_COLOR and os.name == "nt":
@@ -342,7 +375,7 @@ async def main():
     hsk_reply(args.device_host, args.device_port)       # walidacja argumentów
     server = await asyncio.start_server(lambda r, w: client(r, w, args),
                                         args.listen, args.port)
-    log(f"Nasłuch na {args.listen}:{args.port}  (HSK odsyła {args.device_host}:{args.device_port})", BOLD, GREEN)
+    log(f"Nasłuch na {args.listen}:{args.port}  (HSK odsyła {args.device_host}:{args.device_port})", BOLD, GREEN, level=0)
     async with server:
         await server.serve_forever()
 
@@ -351,6 +384,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log("Zatrzymano przez Ctrl+C", YELLOW)
+        log("Zatrzymano przez Ctrl+C", YELLOW, level=0)
     except ValueError as e:
         sys.exit(f"Błąd: {e}")

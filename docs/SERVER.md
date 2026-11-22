@@ -117,6 +117,18 @@ Sekcje CAN były nagrane przy **odłączonym module CAN**, więc nie dają się
 jeszcze zinterpretować. Serwer dekoduje część pozycyjną (`decode_record()`),
 sekcje CAN pokazuje surowo, a rekord z błędnym bajtem oznacza jako „nieczytelny”.
 
+## Poziomy szczegółowości
+
+| przełącznik | co pokazuje w terminalu |
+|---|---|
+| `-q` / `--quiet` | połączenia, rozpoznane ramki (z pozycją), błędy |
+| (domyślnie) | j.w. + odpowiedzi serwera |
+| `-v` | j.w. + surowe odebrane bajty i ramki |
+| `-vv` | j.w. + rozbicie pól (HSK, CONFIG pole po polu, pola rekordu) |
+
+Plik logu (`--log-file`) dostaje zawsze co najmniej poziom `-v` (surowe bajty),
+niezależnie od tego, co widać w terminalu — żeby nic nie przepadło do analizy.
+
 ## Ramka SESJA- (początek sesji)
 
 `SESJA-;<IMEI>;<lon9>E<lat8>N<utc6><date6><tail4>@` — jedna bieżąca pozycja,
