@@ -43,6 +43,10 @@ RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN = (f"\033[3{n}m" for n in (1, 2, 3, 4, 5
 FRAME_COLORS = {"HSK": MAGENTA, "CONFIG": BLUE, "PNG": CYAN, "LOK": GREEN,
                 "LOGUJ-": YELLOW, "AUTO--": YELLOW, "NIEZNANA": RED, "BŁĄD:": RED}
 
+RX = "<= "   # odebrane od urządzenia
+TX = "=> "   # wysłane do urządzenia
+NN = "   "   # bez kierunku (połączenia, podsumowania)
+
 
 def paint(text, *codes):
     codes = [c for c in codes if c]
@@ -274,26 +278,26 @@ def handle_frame(frame, args):
 
 async def answer(frame_raw, who, writer, args):
     """Obsłuż jedną kompletną ramkę (zakończoną '\\n') i odeślij odpowiedź."""
-    log(f"[{who}] ramka: {frame_raw!r}", DIM, level=2)
+    log(f"[{who}] {RX}ramka: {frame_raw!r}", DIM, level=2)
     frame = frame_raw.decode("latin-1").strip("\r\n\x00\x1a ")
     if not frame:
-        log(f"[{who}] pusta linia — pomijam", YELLOW, level=2)
+        log(f"[{who}] {RX}pusta linia — pomijam", YELLOW, level=2)
         return
     try:
         info, reply = handle_frame(frame, args)
     except Exception as e:                  # błąd jednej ramki nie zabija serwera
-        log(f"[{who}] błąd obsługi ramki: {e!r}", BOLD, RED, level=0)
+        log(f"[{who}] {RX}błąd obsługi ramki: {e!r}", BOLD, RED, level=0)
         info, reply = f"BŁĄD: {frame}", "{OK}"
-    log(f"[{who}] {safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]), level=0)
+    log(f"[{who}] {RX}{safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]), level=0)
     writer.write(reply.encode("latin-1"))
     await writer.drain()
-    log(f"[{who}] odpowiedź: {reply}", GREEN, level=1)
+    log(f"[{who}] {TX}odpowiedź: {reply}", BOLD, GREEN, level=1)
 
 
 async def client(reader, writer, args):
     peer = writer.get_extra_info("peername")
     who = f"{peer[0]}:{peer[1]}" if peer else "?"
-    log(f"Połączenie od {who}", BOLD, CYAN, level=0)
+    log(f"{NN}Połączenie od {who}", BOLD, CYAN, level=0)
     loop = asyncio.get_running_loop()
     buf = b""                               # dane jeszcze bez '\n'
     total = frames = 0
@@ -306,10 +310,10 @@ async def client(reader, writer, args):
             except asyncio.TimeoutError:
                 idle = loop.time() - last_rx
                 if buf and not warned and idle >= args.partial_warn:
-                    log(f"[{who}] niepełna ramka (brak \\r\\n od {idle:.0f} s): {buf!r}", BOLD, YELLOW, level=0)
+                    log(f"[{who}] {RX}niepełna ramka (brak \\r\\n od {idle:.0f} s): {buf!r}", BOLD, YELLOW, level=0)
                     warned = True
                 if idle >= args.idle_timeout:
-                    log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam", YELLOW, level=1)
+                    log(f"[{who}] {NN}brak danych przez {args.idle_timeout} s — zamykam", YELLOW, level=1)
                     break
                 continue
 
@@ -320,7 +324,7 @@ async def client(reader, writer, args):
             total += len(chunk)
             last_rx = loop.time()
             warned = False
-            log(f"[{who}] odebrano {len(chunk)} B: {chunk!r}", DIM, level=2)
+            log(f"[{who}] {RX}odebrano {len(chunk)} B: {chunk!r}", DIM, level=2)
 
             buf += chunk
             while b"\n" in buf:
@@ -328,18 +332,18 @@ async def client(reader, writer, args):
                 frames += 1
                 await answer(line + b"\n", who, writer, args)
             if len(buf) > 65536:
-                log(f"[{who}] ponad 64 KiB bez \\r\\n — odrzucam bufor: {buf[:200]!r}...", BOLD, RED, level=0)
+                log(f"[{who}] {RX}ponad 64 KiB bez \\r\\n — odrzucam bufor: {buf[:200]!r}...", BOLD, RED, level=0)
                 buf = b""
     except (ConnectionResetError, BrokenPipeError) as e:
-        log(f"[{who}] połączenie zerwane: {e!r}", RED, level=1)
+        log(f"[{who}] {NN}połączenie zerwane: {e!r}", RED, level=1)
     finally:
         writer.close()
         if buf:
-            log(f"[{who}] niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW, level=0)
+            log(f"[{who}] {RX}niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW, level=0)
         if total == 0:
-            log(f"Rozłączono {who} — nie przyszedł ani jeden bajt", BOLD, YELLOW, level=0)
+            log(f"{NN}Rozłączono {who} — nie przyszedł ani jeden bajt", BOLD, YELLOW, level=0)
         else:
-            log(f"Rozłączono {who} — odebrano {total} B, ramek: {frames}", CYAN, level=0)
+            log(f"{NN}Rozłączono {who} — odebrano {total} B, ramek: {frames}", CYAN, level=0)
 
 
 async def main():

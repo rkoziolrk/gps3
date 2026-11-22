@@ -117,6 +117,10 @@ Sekcje CAN były nagrane przy **odłączonym module CAN**, więc nie dają się
 jeszcze zinterpretować. Serwer dekoduje część pozycyjną (`decode_record()`),
 sekcje CAN pokazuje surowo, a rekord z błędnym bajtem oznacza jako „nieczytelny”.
 
+Każdy wpis związany z ruchem ma znacznik kierunku: `<=` to dane **odebrane**
+od urządzenia (odebrane bajty, ramka, jej interpretacja), `=>` to **wysłane**
+przez serwer (odpowiedź). Połączenia i podsumowania są bez znacznika.
+
 ## Poziomy szczegółowości
 
 | przełącznik | co pokazuje w terminalu |
