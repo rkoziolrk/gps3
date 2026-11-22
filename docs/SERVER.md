@@ -129,6 +129,11 @@ sekcje CAN pokazuje surowo, a rekord z błędnym bajtem oznacza jako „nieczyte
 Plik logu (`--log-file`) dostaje zawsze co najmniej poziom `-v` (surowe bajty),
 niezależnie od tego, co widać w terminalu — żeby nic nie przepadło do analizy.
 
+Domyślna nazwa logu zawiera datę i godzinę startu
+(`tracker_server_RRRR-MM-DD_GG-MM-SS.log`), więc kolejne uruchomienia nie
+nadpisują się. Własną nazwę podasz przez `--log-file`; `{time}` w niej zostaje
+zastąpione znacznikiem czasu, a `--log-file none` wyłącza zapis do pliku.
+
 ## Ramka SESJA- (początek sesji)
 
 `SESJA-;<IMEI>;<lon9>E<lat8>N<utc6><date6><tail4>@` — jedna bieżąca pozycja,

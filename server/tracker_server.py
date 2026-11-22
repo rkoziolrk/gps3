@@ -358,7 +358,10 @@ async def main():
                     help="zamknij połączenie po tylu sekundach ciszy")
     ap.add_argument("--partial-warn", type=int, default=3,
                     help="ostrzeż, gdy dane bez \\r\\n czekają w buforze tyle sekund")
-    ap.add_argument("--log-file", default="tracker_server.log")
+    ap.add_argument("--log-file", default=None,
+                    help="plik logu (domyślnie tracker_server_<data>_<godz>.log; "
+                         "w podanej nazwie {time} jest zastępowane znacznikiem czasu; "
+                         "'' albo 'none' wyłącza zapis)")
     ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
     ap.add_argument("-v", "--verbose", action="count", default=0,
                     help="więcej szczegółów: -v surowe bajty, -vv rozbicie pól")
@@ -367,7 +370,13 @@ async def main():
     args = ap.parse_args()
     VERBOSITY = 0 if args.quiet else 1 + args.verbose       # 0=cicho,1=norm,2=-v,3=-vv
     FILE_LEVEL = max(2, VERBOSITY)                           # plik logu: zawsze >= 2
-    LOG_FILE = args.log_file
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if args.log_file is None:
+        LOG_FILE = f"tracker_server_{stamp}.log"
+    elif args.log_file.lower() in ("", "none"):
+        LOG_FILE = None
+    else:
+        LOG_FILE = args.log_file.replace("{time}", stamp)
     USE_COLOR = sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
     if USE_COLOR and os.name == "nt":
         os.system("")                       # włącza kody ANSI w konsoli Windows
@@ -376,6 +385,8 @@ async def main():
     server = await asyncio.start_server(lambda r, w: client(r, w, args),
                                         args.listen, args.port)
     log(f"Nasłuch na {args.listen}:{args.port}  (HSK odsyła {args.device_host}:{args.device_port})", BOLD, GREEN, level=0)
+    if LOG_FILE:
+        log(f"Log: {LOG_FILE}", DIM, level=0)
     async with server:
         await server.serve_forever()
 
