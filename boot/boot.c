@@ -41,6 +41,16 @@ static void u1_putc(char c) { while (!(UCSR1A & (1 << UDRE1))); UDR1 = (uint8_t)
 static void u1_puts(const char *s) { while (*s) u1_putc(*s++); }
 static void u1_line(const char *s) { u1_puts(s); u1_putc('\r'); }
 
+/* Debug na USART0 (38400, jak aplikacja) — żeby widzieć przebieg OTA. */
+static void u0_init(void)
+{
+    UBRR0H = (uint8_t)(UBRR_VAL(UART0_BAUD) >> 8);
+    UBRR0L = (uint8_t)(UBRR_VAL(UART0_BAUD));
+    UCSR0B = (1 << TXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+static void u0_puts(const char *s) { while (*s) { while (!(UCSR0A & (1 << UDRE0))); UDR0 = (uint8_t)*s++; } }
+
 /* Odbiór 1 bajtu z grubym timeoutem (~ms*pętle). Zwraca -1 przy timeoutcie. */
 static int u1_getc(uint16_t ms)
 {
@@ -123,6 +133,11 @@ static uint8_t do_ota(void)
     char    ln[48];
     uint8_t page_buf[SPM_PAGESIZE];
 
+    /* --- mux: słuchaj modemu (PA3=0, PA4=1) — bez tego GPS zalewa linię --- */
+    DDRA  |= (1 << PA3) | (1 << PA4);
+    PORTA &= ~(1 << PA3);
+    PORTA |=  (1 << PA4);
+
     /* --- bringup modemu: impuls PD6 ("WLACZAM MODEM") jak w aplikacji --- */
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
     PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
@@ -130,7 +145,10 @@ static uint8_t do_ota(void)
     _delay_ms(1500);
     PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
     _delay_ms(5000);
-    if (!at_ok("ATE0", 1000)) return 0;
+    for (uint8_t i = 0; i < 5; i++) { u1_line("AT"); _delay_ms(300); }  /* autobaud */
+
+    u0_puts("BOOT: modem...\r\n");
+    if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
     if (!at_ok("AT+CIPSHUT", 2000)) { /* ignoruj */ }
     char cstt[64];
     strcpy(cstt, "AT+CSTT=\"" APN_DEFAULT "\",\"\",\"\"");
@@ -138,10 +156,20 @@ static uint8_t do_ota(void)
     if (!at_ok("AT+CIICR", 6000)) return 0;
     if (!at_ok("AT+CIPHEAD=0", 1000)) return 0;
 
-    /* CIPSTART: host:port z cfg domyślnego (TODO: wczytać z EEPROM cfg). */
+    /* CIPSTART: host+port z bloku OTA w EEPROM (zapisane przez aplikację). */
+    char host[HOST_MAXLEN];
+    eeprom_read_block(host, (const void *)OTA_HOST_ADDR, HOST_MAXLEN);
+    host[HOST_MAXLEN - 1] = '\0';
+    uint16_t port = eeprom_read_word((const uint16_t *)OTA_PORT_ADDR);
+    if ((uint8_t)host[0] == 0xFF || host[0] == '\0') {   /* brak -> domyślny */
+        strcpy(host, SERVER_HOST_DEFAULT);
+        port = SERVER_PORT_DEFAULT;
+    }
     char cmd[96];
-    strcpy(cmd, "AT+CIPSTART=\"TCP\",\"" SERVER_HOST_DEFAULT "\",");
-    { char ps[6]; utoa(SERVER_PORT_DEFAULT, ps, 10); strcat(cmd, ps); }
+    strcpy(cmd, "AT+CIPSTART=\"TCP\",\"");
+    strcat(cmd, host);
+    strcat(cmd, "\",");
+    { char ps[6]; utoa(port, ps, 10); strcat(cmd, ps); }
     u1_line(cmd);
     /* czekaj CONNECT OK */
     uint8_t conn = 0;
@@ -150,16 +178,29 @@ static uint8_t do_ota(void)
         if (!strncmp(ln, "CONNECT OK", 10) || !strncmp(ln, "ALREADY", 7)) { conn = 1; break; }
         if (!strncmp(ln, "CONNECT FAIL", 12)) break;
     }
-    if (!conn) return 0;
+    if (!conn) { u0_puts("BOOT: brak CONNECT\r\n"); return 0; }
+    u0_puts("BOOT: CONNECT OK, pobieram\r\n");
 
     /* --- żądanie obrazu --- */
-    if (!at_ok("AT+CIPSEND", 2000)) { /* prompt '>' zamiast OK — uproszczenie */ }
+    u1_line("AT+CIPSEND");
+    {   /* czekaj na znak zachęty '>' (bez CR) */
+        uint8_t got_p = 0;
+        for (uint8_t k = 0; k < 30 && !got_p; k++)
+            if (u1_getc(100) == '>') got_p = 1;
+        if (!got_p) return 0;
+    }
     u1_puts("FWREQ\n");
     u1_putc(0x1A);
 
-    /* --- nagłówek "FW <size> <crc>" --- */
-    if (u1_getline(ln, sizeof(ln), 8000) < 0) return 0;
-    if (strncmp(ln, "FW ", 3)) return 0;
+    /* --- nagłówek "FW <size> <crc>" (pomiń "SEND OK" i inne linie modemu) --- */
+    {
+        uint8_t hdr = 0;
+        for (uint8_t k = 0; k < 6 && !hdr; k++) {
+            if (u1_getline(ln, sizeof(ln), 8000) < 0) return 0;
+            if (!strncmp(ln, "FW ", 3)) hdr = 1;
+        }
+        if (!hdr) return 0;
+    }
     uint32_t size = 0, want_crc = 0;
     {
         char *p = ln + 3;
@@ -170,34 +211,43 @@ static uint8_t do_ota(void)
             want_crc = (want_crc << 4) | h;
         }
     }
-    if (size == 0 || size > APP_END) return 0;
+    if (size == 0 || size > APP_END) { u0_puts("BOOT: zly naglowek\r\n"); return 0; }
+    u0_puts("BOOT: naglowek OK, flashuje...\r\n");
 
-    /* --- strumień bajtów -> strony flash + CRC --- */
+    /* --- strumień bajtów -> strony flash + CRC --- *
+     * dirty=1 gdy zaczęliśmy zapisywać flash: wtedy błąd zwraca 2 (aplikacja
+     * może być częściowo nadpisana — nie wolno do niej skoczyć). */
     uint32_t got = 0, crc = 0xFFFFFFFFUL, addr = 0;
     uint16_t fill = 0;
+    uint8_t  dirty = 0;
     memset(page_buf, 0xFF, sizeof(page_buf));
     while (got < size) {
         int c = u1_getc(8000);
-        if (c < 0) return 0;
+        if (c < 0) return dirty ? 2 : 0;
         page_buf[fill++] = (uint8_t)c;
         crc = crc32_up(crc, (uint8_t)c);
         got++;
         if (fill == SPM_PAGESIZE) {
             program_page(addr, page_buf);
+            dirty = 1;
             addr += SPM_PAGESIZE;
             fill = 0;
             memset(page_buf, 0xFF, sizeof(page_buf));
         }
     }
-    if (fill)                               /* ostatnia, niepełna strona */
+    if (fill) {                             /* ostatnia, niepełna strona */
         program_page(addr, page_buf);
+        dirty = 1;
+    }
     crc ^= 0xFFFFFFFFUL;
 
     if (crc != want_crc) {
         u1_puts("FWERR\n");
-        return 0;                           /* zła suma -> ponów przy starcie */
+        u0_puts("BOOT: CRC FAIL\r\n");
+        return dirty ? 2 : 0;               /* zła suma -> ponów przy starcie */
     }
 
+    u0_puts("BOOT: CRC OK -> aplikacja\r\n");
     /* sukces: zapisz meta, skasuj flagę OTA */
     eeprom_update_dword((uint32_t *)META_SIZE_ADDR, size);
     eeprom_update_dword((uint32_t *)META_CRC_ADDR, want_crc);
@@ -211,10 +261,24 @@ int main(void)
     uint8_t flag = eeprom_read_byte((uint8_t *)OTA_FLAG_ADDR);
 
     if (flag == OTA_MAGIC) {
+        u0_init();
+        u0_puts("\r\nBOOT: OTA start\r\n");
         u1_init();
-        /* ponawiaj aż do sukcesu — bootloader zostaje, więc to bezpieczne */
-        while (!do_ota())
-            _delay_ms(5000);
+        uint8_t safe_fail = 0;
+        for (;;) {
+            uint8_t r = do_ota();
+            if (r == 1)                      /* sukces (flaga skasowana w do_ota) */
+                break;
+            if (r == 0) {                    /* nie zaczęliśmy flashować -> aplikacja cała */
+                if (++safe_fail >= 5) {
+                    eeprom_update_byte((uint8_t *)OTA_FLAG_ADDR, 0xFF);
+                    break;                   /* uruchom starą, nienaruszoną aplikację */
+                }
+            }
+            /* r == 2: flash częściowo nadpisany -> NIE skacz do aplikacji,
+             * ponawiaj aż do udanego OTA (ostateczny odzysk przez ISP). */
+            _delay_ms(8000);
+        }
     }
     jump_to_app();
     for (;;)

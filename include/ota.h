@@ -8,12 +8,19 @@
 #define OTA_H
 
 #include <stdint.h>
+#include "cfg_store.h"
 
-#define OTA_FLAG_ADDR  0x07FF     /* ostatni bajt EEPROM 2 KB ATmega64 */
-#define OTA_MAGIC      0xB0       /* wartość = "żądanie aktualizacji"  */
+/* Blok OTA pod STAŁYMI adresami EEPROM (wspólny kontrakt app<->bootloader),
+ * wysoko, z dala od konfiguracji alokowanej przez linker. */
+#define OTA_HOST_ADDR  0x07C0     /* host serwera OTA (HOST_MAXLEN bajtów)     */
+#define OTA_PORT_ADDR  0x07F0     /* port (uint16)                            */
+#define OTA_SIZE_ADDR  0x07F4     /* rozmiar wgranego obrazu (uint32)         */
+#define OTA_CRC_ADDR   0x07F8     /* CRC32 wgranego obrazu (uint32)           */
+#define OTA_FLAG_ADDR  0x07FF     /* flaga żądania OTA                        */
+#define OTA_MAGIC      0xB0       /* wartość = "żądanie aktualizacji"         */
 
-/* Ustaw flagę OTA w EEPROM i zrestartuj urządzenie (watchdog) do bootloadera.
- * Nie wraca. */
-void ota_request(void);
+/* Zapisz host+port do bloku OTA, ustaw flagę i zrestartuj (watchdog) do
+ * bootloadera. Nie wraca. */
+void ota_request(const cfg_t *c);
 
 #endif /* OTA_H */

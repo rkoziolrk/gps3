@@ -63,7 +63,7 @@ static void on_sms(const char *body)
         break;
     case SMS_UPDATE:
         dbg_line("SMS", "zadanie OTA -> bootloader");
-        ota_request();             /* ustawia flagę i restartuje do bootloadera */
+        ota_request(&cfg);         /* zapis hosta+flagi, restart do bootloadera */
         break;
     default:
         break;                     /* zwykły tekst / zły format — ignoruj */
