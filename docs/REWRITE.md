@@ -14,8 +14,9 @@ odwieszony.
 - **USART0 wolny** → przeznaczony na debug/log (patrz niżej, zamiast LCD).
 - **LCD nie jest montowany** na płytce docelowej. W odtworzonym firmware HD44780
   4-bit wisi na PORTC, ale fizycznie go nie ma — cała obsługa LCD do usunięcia.
-- CAN: ATmega64 nie ma kontrolera CAN; dane CAN przychodzą z zewnętrznego modułu
-  (sposób podłączenia do ustalenia — patrz „Otwarte pytania").
+- CAN: ATmega64 nie ma kontrolera CAN; dane przychodzą **już zdekodowane,
+  tekstowo, z zewnętrznego modułu** na współdzielonej linii USART1 (szczegóły i
+  dowód w `docs/CAN.md`). Firmware nie dekoduje surowego CAN auta.
 
 ## Decyzje
 
@@ -67,10 +68,11 @@ rozsądny wolumen danych.
 
 ## Otwarte pytania (do rozstrzygnięcia przed kodowaniem)
 
-- **Podłączenie modułu CAN** — jak fizycznie wpięty do ATmega64 (który UART/port,
-  czy dzieli magistralę, format ramki od modułu).
-- **Identyfikacja pola paliwa** — pole `?B` z sekcji CAN2 (`docs/SERVER.md`) jest
-  kandydatem na poziom paliwa, ale na krótkim przejeździe prawie stałe i nie do
-  odróżnienia od innego stabilnego sygnału. Potrzebny log przy wyraźnie innym
-  poziomie baku (albo liczba z oryginalnej platformy), żeby potwierdzić i
-  wyznaczyć skalę.
+- **Podłączenie modułu CAN** — ustalone, że dane wchodzą tekstowo na USART1
+  (`docs/CAN.md`); do potwierdzenia pozostaje fizyczny punkt wpięcia modułu
+  (czy dzieli tę samą linię RX co GPS/GSM) i dokładny format ramki od modułu.
+- **Identyfikacja pola paliwa** — kod potwierdza, że moduł podaje **jawne pole
+  „Paliwo"** (`docs/CAN.md`), a `?B` z sekcji CAN2 jest jego silnym kandydatem.
+  Skala jest jednak własnością modułu, więc ~287 nie przeliczymy na litry bez
+  punktu odniesienia: potrzebny log przy innym poziomie baku albo liczba z
+  oryginalnej platformy.
