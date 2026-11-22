@@ -302,6 +302,21 @@ def handle_new_proto(frame):
 
 def handle_frame(frame, args):
     """Zwraca (opis do logu, odpowiedź do wysłania)."""
+    if frame.startswith("FWREQ"):
+        # Bootloader prosi o obraz: odsyłamy "FW <rozmiar> <crc32>\n" + bajty.
+        if not getattr(args, "fw", None):
+            return "FWREQ — brak --fw, odmawiam", "FWERR\n"
+        try:
+            with open(args.fw, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            return f"FWREQ — nie mogę otworzyć {args.fw}: {e}", "FWERR\n"
+        import zlib
+        crc = zlib.crc32(data) & 0xFFFFFFFF
+        header = f"FW {len(data)} {crc:08x}\n"
+        reply = header + data.decode("latin-1")     # bajty 1:1 w latin-1
+        return f"FWREQ -> wysyłam {len(data)} B, crc={crc:08x}", reply
+
     if frame.startswith("#"):
         return handle_new_proto(frame)
 
@@ -462,6 +477,9 @@ async def main():
                     help="plik logu (domyślnie tracker_server_<data>_<godz>.log; "
                          "w podanej nazwie {time} jest zastępowane znacznikiem czasu; "
                          "'' albo 'none' wyłącza zapis)")
+    ap.add_argument("--fw", default=None,
+                    help="plik obrazu firmware serwowany bootloaderowi na 'FWREQ' "
+                         "(np. ../build/tracker.bin) — zdalna aktualizacja OTA")
     ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
     ap.add_argument("-v", "--verbose", action="count", default=0,
                     help="więcej szczegółów: -v surowe bajty, -vv rozbicie pól")

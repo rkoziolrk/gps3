@@ -11,6 +11,7 @@ typedef enum {
     SMS_NONE = 0,     /* nic / zwykły tekst                     */
     SMS_SETADDR,      /* zmieniono host+port (cfg zaktualizowany) */
     SMS_RESET,        /* reset do ustawień fabrycznych           */
+    SMS_UPDATE,       /* żądanie zdalnej aktualizacji (OTA)      */
     SMS_BADFMT        /* rozpoznana komenda, ale zły format      */
 } sms_action_t;
 

@@ -47,6 +47,7 @@ $(TARGET).elf: $(OBJS)
 
 $(TARGET).hex: $(TARGET).elf
 	$(OBJCOPY) -O ihex -R .eeprom $< $@
+	$(OBJCOPY) -O binary -R .eeprom $< $(TARGET).bin   # obraz do OTA (serwer)
 
 size: $(TARGET).elf
 	$(SIZE) --format=avr --mcu=$(MCU) $<

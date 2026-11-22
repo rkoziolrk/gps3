@@ -40,6 +40,13 @@ sms_action_t sms_parse(const char *text, cfg_t *c, const char *imei_pin)
         return SMS_SETADDR;
     }
 
+    if (!strncmp(text, "FWUPD*", 6) || !strncmp(text, "FWUPD-", 6)) {
+        const char *pin = text + 6;
+        if (imei_pin && !strncmp(pin, imei_pin, 4))
+            return SMS_UPDATE;
+        return SMS_BADFMT;
+    }
+
     if (!strncmp(text, "RESET*", 6) || !strncmp(text, "RESET-", 6)) {
         const char *pin = text + 6;
         if (imei_pin && !strncmp(pin, imei_pin, 4))
