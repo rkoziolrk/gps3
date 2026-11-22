@@ -94,24 +94,24 @@ Rekord składa funkcja `0x210e`, sklejając pola **bez separatorów**. Układ
 **potwierdzony na prawdziwej ramce** `LOO-02` z urządzenia. Część pozycyjna ma
 45 znaków, po niej dwie sekcje CAN rozdzielone `!`.
 
-Przykład rekordu:
-`020289030E53443841N01180903613170412071900031!0390000401980239937200!+9902770000`
-→ `12.07.2019 13:17:04 UTC  53.739735N 20.481717E  v=036 sat=09 alt=118 m`.
+Przykład rekordu (dane zmyślone):
+`021007020E52138000N01200804210150001012600010!0000000000000000000000!+0000000000`
+→ `01.01.2026 10:15:00 UTC  52.230000N 21.011700E  v=042 sat=08 alt=120 m`.
 
 | pole | szer. | przykład | znaczenie | pewność |
 |---|---|---|---|---|
-| długość geogr. `dddmm.mmmm` bez kropki | 9 | `020289030` | 020°28.9030′ | wysoka |
+| długość geogr. `dddmm.mmmm` bez kropki | 9 | `021007020` | 021°00.7020′ | wysoka |
 | `E` / `W` | 1 | `E` | | wysoka |
-| szerokość geogr. `ddmm.mmmm` bez kropki | 8 | `53443841` | 53°44.3841′ | wysoka |
+| szerokość geogr. `ddmm.mmmm` bez kropki | 8 | `52138000` | 52°13.8000′ | wysoka |
 | `N` / `S` | 1 | `N` | | wysoka |
-| wysokość [m] | 4 | `0118` | 118 m | wysoka |
-| liczba satelitów | 2 | `09` | | wysoka |
-| prędkość | 3 | `036` | jednostka nieustalona | średnia |
-| czas UTC `hhmmss` | 6 | `131704` | 13:17:04 | wysoka |
-| data `ddmmrr` | 6 | `120719` | 12.07.2019 | wysoka |
-| ogon | 5 | `00031` | licznik/flagi, nieustalone | niska |
-| `!` sekcja CAN | 22 | `0390000401980239937200` | paliwo/RPM/pedał/sonda | niska |
-| `!` sekcja CAN | 11 | `+9902770000` | j.w. | niska |
+| wysokość [m] | 4 | `0120` | 120 m | wysoka |
+| liczba satelitów | 2 | `08` | | wysoka |
+| prędkość | 3 | `042` | jednostka nieustalona | średnia |
+| czas UTC `hhmmss` | 6 | `101500` | 10:15:00 | wysoka |
+| data `ddmmrr` | 6 | `010126` | 01.01.2026 | wysoka |
+| ogon | 5 | `00010` | licznik/flagi, nieustalone | niska |
+| `!` sekcja CAN | 22 | (paliwo/RPM/pedał/sonda) | | niska |
+| `!` sekcja CAN | 11 | `+<…>` | j.w. | niska |
 
 Sekcje CAN były nagrane przy **odłączonym module CAN**, więc nie dają się
 jeszcze zinterpretować. Serwer dekoduje część pozycyjną (`decode_record()`),
