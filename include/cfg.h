@@ -41,4 +41,9 @@
 #define DBG_RAW_CAN   1
 #define DBG_RAW_LINE  1
 
+/* Diagnostyka po TCP: okresowy raport surowej ramki CAN na serwer (ramka
+ * #RAW). Niezbędne, gdy debug USART0 jest niedostępny — np. w aucie. */
+#define DIAG_CAN_TCP     1
+#define DIAG_CAN_PERIOD 10        /* [s] między raportami CAN na serwer       */
+
 #endif /* CFG_H */

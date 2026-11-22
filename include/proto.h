@@ -31,4 +31,8 @@ uint8_t proto_ping(char *buf, uint8_t size, const char *imei, uint32_t uptime);
 uint8_t proto_pos(char *buf, uint8_t size, const gps_fix_t *fix,
                   char move_flag, const char *can_raw);
 
+/* Ramka diagnostyczna: surowa linia ze źródła src (np. "CAN") na serwer.
+ * Pozwala zbierać dane zdalnie, gdy debug USART0 jest niedostępny (w aucie). */
+uint8_t proto_raw(char *buf, uint8_t size, const char *src, const char *payload);
+
 #endif /* PROTO_H */

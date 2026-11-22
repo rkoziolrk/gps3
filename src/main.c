@@ -55,7 +55,7 @@ int main(void)
     char    line[UART_LINE_MAX];
     char    frame[180];
     uint8_t greeted = 0;
-    uint32_t last_ping = 0, last_led = 0;
+    uint32_t last_ping = 0, last_led = 0, last_can_diag = 0;
 
     hw_init();
     dbg_kv("CFG", "port", cfg.port);
@@ -114,6 +114,22 @@ int main(void)
             if (gsm_send_frame(frame))
                 last_ping = now;
         }
+
+        /* 4b) Diagnostyka CAN po TCP — zdalne zbieranie surowych ramek, gdy
+         *     debug USART0 jest niedostępny (jazda). POS też niesie CAN, ale
+         *     ten raport działa też na postoju z pracującym silnikiem. */
+#if DIAG_CAN_TCP
+        if (gsm_online() && greeted && (now - last_can_diag) >= DIAG_CAN_PERIOD) {
+            const char *craw = can_last_raw();
+            if (craw[0]) {
+                proto_raw(frame, sizeof(frame), "CAN", craw);
+                if (gsm_send_frame(frame)) {
+                    last_can_diag = now;
+                    can_clear();
+                }
+            }
+        }
+#endif
 
         /* 5) Dioda statusu: miganie (online = szybciej). TODO: strojenie. */
         if ((now - last_led) >= (gsm_online() ? 1u : 2u)) {

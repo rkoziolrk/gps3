@@ -37,6 +37,12 @@ uint8_t proto_ping(char *buf, uint8_t size, const char *imei, uint32_t uptime)
     return proto_finish(buf);
 }
 
+uint8_t proto_raw(char *buf, uint8_t size, const char *src, const char *payload)
+{
+    snprintf(buf, size, "#RAW,%s,%s", src, payload);
+    return proto_finish(buf);
+}
+
 uint8_t proto_pos(char *buf, uint8_t size, const gps_fix_t *fix,
                   char move_flag, const char *can_raw)
 {

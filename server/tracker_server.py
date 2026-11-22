@@ -235,8 +235,76 @@ def detail(lines):
     return ("\n    " + "\n    ".join(lines)) if VERBOSITY >= 3 and lines else ""
 
 
+def nproto_xor(body):
+    """XOR znaków między '#' a '*' — suma nowego protokołu (jak w firmware)."""
+    x = 0
+    for ch in body:
+        x ^= ord(ch)
+    return x
+
+
+def nproto_reply(typ):
+    body = typ
+    return f"#{body}*{nproto_xor(body):02X}\r\n"
+
+
+def handle_new_proto(frame):
+    """Nowy protokół firmware 3.x: #TYP,pola*XOR. Zwraca (opis, odpowiedź)."""
+    core, star, cs = frame[1:].partition("*")
+    if star:
+        want = int(cs[:2], 16) if len(cs) >= 2 and all(c in "0123456789abcdefABCDEF" for c in cs[:2]) else -1
+        got = nproto_xor(core)
+        if want >= 0 and want != got:
+            return f"#?  zła suma (jest {got:02X}, w ramce {cs[:2]}): {frame}", nproto_reply("ERR")
+    f = core.split(",")
+    typ = f[0]
+
+    if typ == "HELLO":
+        # HELLO,proto,imei,fw,gps,gsm
+        return (f"HELLO  IMEI={f[2] if len(f) > 2 else '?'}  proto={f[1] if len(f) > 1 else '?'} "
+                f"fw={f[3] if len(f) > 3 else '?'} {'/'.join(f[4:])}"), nproto_reply("OK")
+
+    if typ == "PING":
+        return f"PING  IMEI={f[1] if len(f) > 1 else '?'}  uptime={f[2] if len(f) > 2 else '?'}s", nproto_reply("OK")
+
+    if typ == "RAW":
+        # RAW,<src>,<payload...>  — payload (ramka CAN) może zawierać przecinki
+        src = f[1] if len(f) > 1 else "?"
+        payload = core.split(",", 2)[2] if len(f) > 2 else ""
+        info = f"RAW {src}  {payload}"
+        can = decode_can(*payload.split("!")[:2]) if "!" in payload else {}
+        if can:
+            info += "   " + " ".join(f"{k}={v}" for k, v in can.items())
+        return info, nproto_reply("OK")
+
+    if typ == "POS":
+        # POS,utc,lat1e7,lon1e7,alt,sat,spd,course,flag[,CAN:<raw>]
+        try:
+            utc = f[1]
+            lat = int(f[2]) / 1e7
+            lon = int(f[3]) / 1e7
+            when = f"{utc[:2]}:{utc[2:4]}:{utc[4:]}" if len(utc) == 6 else utc
+            info = (f"POS  {when} UTC  {lat:.6f}, {lon:.6f}  "
+                    f"alt={f[4]}m sat={f[5]} v={f[6]} kurs={f[7]} {f[8]}")
+            craw = ""
+            if "CAN:" in core:
+                craw = core.split("CAN:", 1)[1]
+                info += f"   CAN[{craw}]"
+                can = decode_can(*craw.split("!")[:2]) if "!" in craw else {}
+                if can:
+                    info += "  " + " ".join(f"{k}={v}" for k, v in can.items())
+        except (ValueError, IndexError) as e:
+            info = f"POS nieczytelny ({e!r}): {frame}"
+        return info, nproto_reply("OK")
+
+    return f"#? nieznany typ: {frame}", nproto_reply("OK")
+
+
 def handle_frame(frame, args):
     """Zwraca (opis do logu, odpowiedź do wysłania)."""
+    if frame.startswith("#"):
+        return handle_new_proto(frame)
+
     if frame.startswith("HSK-02;"):
         p = frame.split(";")
         info = f"HSK  IMEI={p[1] if len(p) > 1 else '?'}  " + ";".join(p[2:])
