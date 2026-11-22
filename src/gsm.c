@@ -32,6 +32,7 @@ static uint8_t      has_pending;
 
 /* Odczyt SMS. */
 static uint8_t      in_cmgr;         /* trwa AT+CMGR=1 — przechwytuj treść    */
+static uint8_t      in_cifsr;        /* trwa AT+CIFSR — odpowiedź to IP, nie OK */
 static uint8_t      sms_marker;      /* widziano nagłówek +CMGR:              */
 static uint8_t      sms_have;        /* złapano treść SMS                     */
 static char         sms_body[80];
@@ -43,6 +44,8 @@ static volatile uint8_t f_ok, f_err, f_connect, f_prompt, f_sendok, f_closed;
 #define MAX_RETRIES     3
 #define STEP_CMGR       3
 #define STEP_CMGD       4
+#define STEP_COPS       6
+#define STEP_CIFSR     10
 #define STEP_LAST      12
 
 const char *gsm_imei(void)   { return imei; }
@@ -144,6 +147,9 @@ void gsm_feed(const char *line)
         }
     }
 
+    /* AT+CIFSR zwraca sam adres IP (linia zaczynająca się cyfrą), bez "OK". */
+    if (in_cifsr && line[0] >= '0' && line[0] <= '9') f_ok = 1;
+
     if (!strncmp(line, "OK", 2))              f_ok = 1;
     if (!strncmp(line, "ERROR", 5))           f_err = 1;
     if (!strncmp(line, "CONNECT OK", 10))     f_connect = 1;
@@ -158,7 +164,8 @@ static void send_step(uint32_t now)
     char tmp[96];
     const char *cmd = step_cmd(step, tmp, sizeof(tmp));
     f_ok = f_err = f_connect = 0;
-    in_cmgr = (step == STEP_CMGR);
+    in_cmgr  = (step == STEP_CMGR);
+    in_cifsr = (step == STEP_CIFSR);
     gsm_route(1);                       /* na czas komendy i odpowiedzi: modem */
     if (cmd) {
         dbg_line("GSM>", cmd);          /* pokaż, co wysyłamy do modemu */
@@ -182,8 +189,9 @@ void gsm_tick(uint32_t now)
             return;
         }
 
-        /* Krok kasowania SMS kończymy na OK albo ERROR (pusta pozycja). */
-        if ((step == STEP_CMGD && (f_ok || f_err)) || (step != STEP_CMGD && f_ok)) {
+        /* CMGD (pusta pozycja) i COPS (gdy już zarejestrowany) mogą dać ERROR
+         * — traktujemy to jak sukces i idziemy dalej. */
+        if (f_ok || ((step == STEP_CMGD || step == STEP_COPS) && f_err)) {
             if (step == STEP_CMGD) {
                 in_cmgr = 0;
                 if (sms_have && sms_handler) {
