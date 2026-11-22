@@ -138,16 +138,23 @@ static uint8_t do_ota(void)
     PORTA &= ~(1 << PA3);
     PORTA |=  (1 << PA4);
 
-    /* --- bringup modemu: impuls PD6 ("WLACZAM MODEM") jak w aplikacji --- */
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
-    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
-    _delay_ms(1500);
-    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-    _delay_ms(5000);
-    for (uint8_t i = 0; i < 5; i++) { u1_line("AT"); _delay_ms(300); }  /* autobaud */
 
-    u0_puts("BOOT: modem...\r\n");
+    /* Modem może już działać (restart z aplikacji). Impuls PD6 na WŁĄCZONYM
+     * SIM900 WYŁĄCZYŁBY go — dlatego najpierw próbujemy AT; pulsujemy tylko
+     * gdy modem milczy. */
+    u0_puts("BOOT: modem?\r\n");
+    uint8_t alive = 0;
+    for (uint8_t k = 0; k < 3 && !alive; k++) if (at_ok("AT", 600)) alive = 1;
+    if (!alive) {
+        u0_puts("BOOT: wlaczam modem (PD6)\r\n");
+        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+        PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(1500);
+        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(5000);
+        for (uint8_t i = 0; i < 5; i++) { u1_line("AT"); _delay_ms(300); }
+    }
     if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
     if (!at_ok("AT+CIPSHUT", 2000)) { /* ignoruj (zwraca "SHUT OK") */ }
 
@@ -183,6 +190,9 @@ static uint8_t do_ota(void)
         strcpy(host, SERVER_HOST_DEFAULT);
         port = SERVER_PORT_DEFAULT;
     }
+    u0_puts("BOOT: host=");
+    u0_puts(host);
+    u0_puts("\r\n");
     char cmd[96];
     strcpy(cmd, "AT+CIPSTART=\"TCP\",\"");
     strcat(cmd, host);
