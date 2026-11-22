@@ -58,11 +58,19 @@ uint8_t     gsm_online(void) { return state >= G_ONLINE; }   /* ONLINE i stany p
  * Wysyła AT i czeka ~700 ms na jakikolwiek bajt odpowiedzi. */
 static uint8_t modem_alive_poll(void)
 {
+    uint8_t prev = 0;
     while (UCSR1A & (1 << RXC1)) (void)UDR1;      /* opróżnij bufor */
     uart1_send_line("AT");
-    for (uint16_t t = 0; t < 700; t++) {
-        if (UCSR1A & (1 << RXC1)) { (void)UDR1; return 1; }
-        _delay_ms(1);
+    /* Szukamy REALNEGO "OK" — sam bajt to za mało (szum na linii gdy modem
+     * wyłączony dawałby fałszywe trafienie i pominięcie impulsu PD6). */
+    for (uint16_t t = 0; t < 900; t++) {
+        if (UCSR1A & (1 << RXC1)) {
+            char c = (char)UDR1;
+            if (prev == 'O' && c == 'K') return 1;
+            prev = (uint8_t)c;
+        } else {
+            _delay_ms(1);
+        }
     }
     return 0;
 }
