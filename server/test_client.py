@@ -183,9 +183,9 @@ def run_negative(args):
         ("odpowiedź 'OK\\r\\n' (bez klamer)", "OK\r\n", "hsk", False),
         ("poprawna odpowiedź HSK", good, "hsk", True),
         ("HSK z jednym zmienionym znakiem", good[:12] + chr(ord(good[12]) ^ 0x01) + good[13:], "hsk", False),
-        # Dwa takie same przekłamania bitu znoszą się w sumie XOR, a separatorów
-        # (poz. 4 i 9) firmware nie sprawdza — urządzenie też by to przyjęło.
-        ("HSK: oba separatory ';'->':' (XOR*)", good.replace(";", ":", 2), "hsk", True),
+        # Suma XOR nie zależy od kolejności znaków, a separatorów (poz. 4 i 9)
+        # firmware nie sprawdza — zamiana '=' z ';' przechodzi także w urządzeniu.
+        ("HSK: zamienione '=' i ';' (XOR*)", good.replace("=", "#", 1).replace(";", "=", 1).replace("#", ";", 1), "hsk", True),
         ("HSK z innym hostem", srv.hsk_reply("inny.host.pl", args.device_port), "hsk", False),
         ("HSK krótsza o 1 znak", good[:-2] + "}", "hsk", False),
         ("CONFIG z popsutą sumą", srv.config_reply()[:-4] + "000}", "cfg", False),

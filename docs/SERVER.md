@@ -17,7 +17,7 @@ Wymagania odtworzone z firmware. Gotowa implementacja: `server/tracker_server.py
 
 | ramka od urządzenia | odpowiedź serwera | gdy odpowiedź zła / brak |
 |---|---|---|
-| `HSK-02;<IMEI>;2.65;ORANGE;...` | `{HSK;<port>;<host>*<xor>}` (38 znaków w klamrach) | `-HSK-ERROR` / `HSK PROBLEM`, restart |
+| `HSK-02;<IMEI>;2.65;ORANGE;...` | `{HSK=<port>;<host>*<xor>}` (38 znaków w klamrach) | `-HSK-ERROR` / `HSK PROBLEM`, restart |
 | `CONFIG;<IMEI>;05` | 81 znaków w klamrach, suma XOR na poz. 79–81 | `-CONFIG-ERROR`, restart (kod 14) |
 | `PNG-01;<IMEI>;CAN;<n>;FORM;Er=...` | `{OK}` | kody restartu nie są zerowane |
 | `LOK-02;<IMEI>$<rekord>$...` | `{OK}` | rekordy zostają; brak odpowiedzi → restart (kod 9) |
@@ -27,9 +27,9 @@ Wymagania odtworzone z firmware. Gotowa implementacja: `server/tracker_server.py
 
 ```
 poz.  1-3   HSK
-poz.  4     separator (dowolny)
+poz.  4     '=' (w oryginale; firmware nie sprawdza)
 poz.  5-8   port (4 cyfry)
-poz.  9     separator (dowolny)
+poz.  9     ';' (w oryginale; firmware nie sprawdza)
 poz. 10-34  host; krótszy niż 25 znaków kończy się '$' (reszta dowolna)
 poz. 35     *
 poz. 36-38  XOR znaków 1-34, 3 cyfry
@@ -106,5 +106,12 @@ przekierowaniu do pliku lub potoku wyłączają się same, a plik logu serwera
 jest zawsze bez kodów kolorów.
 
 Uwaga: suma XOR jest słaba — dwa takie same przekłamania bitu się znoszą
-(test pokazuje to na przykładzie separatorów `;` → `:`, które firmware i tak
-pomija).
+i nie zależy od kolejności znaków (test pokazuje to, zamieniając miejscami
+separatory `=` i `;`, których firmware i tak nie sprawdza).
+
+## Odpowiedź oryginalnego serwera
+
+Log z urządzenia połączonego z oryginalnym serwerem pokazał odpowiedź
+`{HSK=;*086}` — ten sam układ (`HSK=<port>;<host>*<suma>`), ale z pustym portem
+i hostem: serwer nie ma adresu dla tego urządzenia. Firmware odrzuca ją
+(długość 9 zamiast 38) i restartuje się.

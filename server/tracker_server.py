@@ -73,7 +73,8 @@ def xor_sum(text):
 # ---------------------------------------------------------------------------
 # Odpowiedź na HSK-02 (@0x2f30..0x31c2)
 #   treść między klamrami: dokładnie 38 znaków
-#   poz. 1-3 "HSK", 4 separator, 5-8 port, 9 separator,
+#   poz. 1-3 "HSK", 4 '=', 5-8 port, 9 ';'   (format oryginalnego serwera,
+#   potwierdzony odpowiedzią "{HSK=;*086}" z logu urządzenia),
 #   poz. 10-34 host (krótszy kończy się '$'), 35 '*', 36-38 XOR(1..34)
 # ---------------------------------------------------------------------------
 def hsk_reply(host, port):
@@ -82,7 +83,7 @@ def hsk_reply(host, port):
     if len(host) > 25:
         raise ValueError("host może mieć najwyżej 25 znaków")
     field = host if len(host) == 25 else (host + "$").ljust(25, "0")
-    body = "HSK;" + port + ";" + field           # 34 znaki
+    body = "HSK=" + port + ";" + field           # 34 znaki
     assert len(body) == 34
     return "{" + body + "*" + f"{xor_sum(body):03d}" + "}"
 
