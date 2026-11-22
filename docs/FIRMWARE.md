@@ -34,7 +34,8 @@ Zużycie: ~9 KB flash (14%), ~1,3 KB RAM.
 
 ## Zbieranie danych do nierozwiązanych pytań
 
-Na porcie **USART0 (115200 8N1)** leci log z sygnaturą czasu. Istotne wpisy:
+Na porcie **USART0 (38400 8N1)** leci log z sygnaturą czasu. (38400 bo dzieli się
+czysto przy 8 MHz; 115200 @8 MHz ma ~8,5% błędu → krzaki.) Istotne wpisy:
 
 - `RAW GPS <= $G...` — surowe zdania NMEA,
 - `RAW LINE <= ...` — wszystkie nie-GPS linie (odpowiedzi modemu **oraz** ramki

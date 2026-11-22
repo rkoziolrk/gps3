@@ -22,7 +22,8 @@
 
 /* --- Prędkości transmisji ------------------------------------------------ */
 #define UART1_BAUD 9600UL          /* linia GPS+GSM (jak oryginał, AT+IPR=9600) */
-#define UART0_BAUD 115200UL        /* debug — szybki, żeby nie spowalniać pętli  */
+#define UART0_BAUD 38400UL         /* debug — czysty dzielnik @8 MHz (UBRR=12, bł. 0,16%).
+                                      UWAGA: 115200 @8 MHz ma ~8,5% błędu => krzaki. */
 
 #define UBRR_VAL(baud) ((F_CPU / (16UL * (baud))) - 1)
 
