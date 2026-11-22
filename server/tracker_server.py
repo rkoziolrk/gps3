@@ -170,18 +170,18 @@ POS_LAYOUT = [             # (nazwa, szerokość) — część pozycyjna, 45 zna
 def decode_can(c1, c2):
     """Rozbija sekcje CAN na pola. Układ odtworzony z logu jazdy (CAN podłączony),
     znaczenia potwierdzone korelacją z prędkością/pedałem — część niepewna.
-      CAN1 (22): spd3 pedal4 k1 fuel4 odo10
-      CAN2 (11): '+' '99' volt4 stat4
+      CAN1 (22): spd3 pedal4 k1 cons4 odo10
+      CAN2 (11): '+' '99' fuel4 stat4
     """
     out = {}
     if len(c1) == 22:
         out["can_speed"] = c1[0:3]      # prędkość z CAN [km/h] (koreluje z GPS)
         out["pedal"] = c1[3:7]          # pedał gazu (0 = puszczony)
         out["_k"] = c1[7:8]             # stała '6' — nieustalone
-        out["fuel"] = c1[8:12]          # zużycie/paliwo — niepewne (wysokie na biegu jałowym)
-        out["odo"] = c1[12:22]          # licznik przebiegu (rośnie z jazdą)
+        out["cons"] = c1[8:12]          # zużycie chwilowe (wysokie na jałowym, niskie w jeździe)
+        out["odo"] = c1[12:22]          # przebieg w metrach (/1000 = km, potwierdzone)
     if len(c2) == 11 and c2[0] == "+":
-        out["volt"] = c2[3:7]           # ~28.7 — napięcie(24 V)/temp, niepewne
+        out["fuel"] = c2[3:7]           # poziom paliwa w baku (~28.7 L); 0000 = zapłon off
         out["stat"] = c2[7:11]          # status/kod
     return out
 
@@ -213,8 +213,9 @@ def describe_record(rec):
     t, dt = r["utc"], r["date"]
     when = f"{dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]}" if len(t) == 6 and len(dt) == 6 else "?"
     if "can_speed" in r:
+        fuel = int(r["fuel"]) / 10 if r.get("fuel") else 0
         can = (f"CAN[v={int(r['can_speed'])} ped={int(r['pedal'])} "
-               f"fuel={int(r['fuel'])} odo={int(r['odo'])} U={r.get('volt', '?')}]")
+               f"zuzycie={int(r['cons'])} przebieg={int(r['odo'])/1000:.1f}km bak={fuel:.1f}L]")
     elif r["can1"] or r["can2"]:
         can = f"CAN=[{r['can1']}|{r['can2']}]"
     else:
