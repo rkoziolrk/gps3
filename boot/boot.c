@@ -149,7 +149,25 @@ static uint8_t do_ota(void)
 
     u0_puts("BOOT: modem...\r\n");
     if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
-    if (!at_ok("AT+CIPSHUT", 2000)) { /* ignoruj */ }
+    if (!at_ok("AT+CIPSHUT", 2000)) { /* ignoruj (zwraca "SHUT OK") */ }
+
+    /* Czekaj na rejestrację w sieci (AT+CREG? -> ",1" dom. lub ",5" roaming).
+     * Bez tego CIICR pada — aplikacja miała na to czas w krokach CREG/COPS. */
+    {
+        uint8_t reg = 0;
+        for (uint8_t k = 0; k < 20 && !reg; k++) {
+            u1_line("AT+CREG?");
+            for (uint8_t j = 0; j < 4; j++) {
+                if (u1_getline(ln, sizeof(ln), 1000) < 0) break;
+                if (strstr(ln, "+CREG:") && (strstr(ln, ",1") || strstr(ln, ",5"))) { reg = 1; break; }
+            }
+            if (!reg) _delay_ms(1000);
+        }
+        if (!reg) { u0_puts("BOOT: brak rejestracji\r\n"); return 0; }
+    }
+    u0_puts("BOOT: zarejestrowany\r\n");
+    at_ok("AT+CGATT=1", 6000);          /* GPRS attach (toleruj — CIICR i tak sprawdzi) */
+
     char cstt[64];
     strcpy(cstt, "AT+CSTT=\"" APN_DEFAULT "\",\"\",\"\"");
     if (!at_ok(cstt, 3000)) return 0;
