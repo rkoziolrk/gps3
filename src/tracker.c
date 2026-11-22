@@ -691,30 +691,105 @@ static void sim900_tcp_send(const char *payload)
 }
 
 /* ========================================================================== */
-/*  [REC]  Obsluga SMS  — @0x44a4 / @0x440e  (ST_WORK: "-- CZYTAM SMS ---")    */
+/*  [REC]  Obsluga SMS — odczyt @0x80ac, komendy @0x84dc, kasowanie @0x883a     */
 /* ========================================================================== */
-/*  Komendy rozpoznawane w tresci SMS (stringi 0xc2ce..0xc34e):
- *    "RESET*" / "RESET-"  -> KOMENDA RESET  (restart lokalizatora)
- *    "NEW*ADR="           -> zmiana adresu serwera, zapis do EEPROM
- *  Po przetworzeniu: AT+CMGD (kasowanie) -> "SMS IS CLEAR".                    */
+/*  - odczytywana jest TYLKO pozycja 1 na karcie SIM (AT+CMGR=1); kolejne SMS-y
+ *    czekaja, dopoki pozycja 1 nie zostanie skasowana,
+ *  - numer nadawcy: 9 cyfr po "+48" (RAM 0x0B78),
+ *  - PIN = 4 ostatnie cyfry IMEI (Mid(IMEI,12,4), RAM 0x0B66, na LCD "PIN>"),
+ *  - "RESET*<PIN>" / "RESET-<PIN>": ustawienia fabryczne (lgps01...:3506,
+ *    tryb roamingu 3), skasowanie SMS, "KOMENDA RESET", restart (kod 27),
+ *  - "NEW*ADR=<host>$<port>$" (bez PIN-u): zapis hosta (bufor 36 B) i portu
+ *    (bufor 5 B), tryb roamingu 3, skasowanie SMS, restart (kod 28).
+ *    W oryginale NIE MA kontroli dlugosci: bez '$' petle zbieraja do 255 znakow
+ *    i przepelniaja 5-bajtowy bufor portu — urzadzenie resetuje sie przed
+ *    skasowaniem SMS-a i wpada w petle restartow. Tu dlugosci sa sprawdzane,
+ *  - inny SMS przy aktywnej sesji: tresc wysylana na serwer jako LOGUJ-;
+ *    (w tej sciezce obrazu nie ma AT+CMGD).                                   */
+
+static void config_save_port(const char *port);    /* def. nizej              */
+static void config_save_roaming_mode(uint8_t m);   /* def. nizej              */
+
+/* Zbierz linie odpowiedzi modemu (bez NMEA) przez 'ms' milisekund. */
+static void sim900_collect(char *out, uint8_t size, uint16_t ms)
+{
+    out[0] = '\0';
+    while (ms--) {
+        while (line_ready) {
+            nmea_poll();
+            if (last_reply[0] && strlen(out) + strlen(last_reply) + 2 < size) {
+                strcat(out, last_reply);
+                strcat_P(out, PSTR("\n"));
+            }
+            last_reply[0] = '\0';
+        }
+        _delay_ms(1);
+    }
+}
+
+static void sms_delete(void)                       /* @0x883a                 */
+{
+    sim900_cmd("AT+CMGD=1,3");                     /* 3 = przeczytane i wyslane */
+    sim900_wait_ok(3000);
+    lcd_puts_P(PSTR("SMS IS CLEAR"));
+}
 
 static void sms_poll(void)
 {
-    char buf[160];
+    char buf[160], pin[5], cmd[12];
+    char *p, *q;
+
     lcd_puts_P(PSTR("-- CZYTAM SMS  ---"));
-    sim900_cmd("AT+CMGF=1");               /* tryb tekstowy                     */
-    sim900_cmd("AT+CMGR=1");               /* odczyt 1. wiadomosci              */
-    /* [REC] jesli "ERROR"/"[Brak SMS]" -> wyjdz */
-    if (strstr_P(buf, PSTR("RESET"))) {    /* "RESET*"/"RESET-" -> restart       */
+    sim900_cmd("AT+CMGF=1");
+    sim900_wait_ok(1000);
+    sim900_cmd("AT+CMGR=1");                       /* tylko pozycja 1!        */
+    sim900_collect(buf, sizeof(buf), 2000);
+    if (!strstr_P(buf, PSTR("+CMGR:"))) {
+        lcd_puts_P(PSTR("[Brak SMS]"));
+        return;
+    }
+
+    /* PIN = 4 ostatnie cyfry IMEI */
+    strncpy(pin, strlen(imei) >= 15 ? imei + 11 : "0000", 4);
+    pin[4] = '\0';
+
+    /* RESET*<PIN> / RESET-<PIN> -> ustawienia fabryczne (@0x8540..0x864e) */
+    strcpy_P(cmd, PSTR("RESET*")); strcat(cmd, pin);
+    p = strstr(buf, cmd);
+    strcpy_P(cmd, PSTR("RESET-")); strcat(cmd, pin);
+    if (p || strstr(buf, cmd)) {
+        config_save_host(SERVER_DEFAULT);
+        config_save_port(SERVER_PORT_DEFAULT);
+        config_save_roaming_mode(3);
+        sms_delete();
         lcd_puts_P(PSTR("KOMENDA RESET"));
-        restart_with_reason(27);           /* kod 27 @0x864e                  */
+        restart_with_reason(27);
     }
-    {   char *p = strstr_P(buf, PSTR("NEW*ADR="));   /* zmiana hosta serwera      */
-        if (p) { config_save_host(p + 8); }
+
+    /* NEW*ADR=<host>$<port>$ (@0x866a..0x8822) */
+    p = strstr_P(buf, PSTR("NEW*ADR="));
+    if (p) {
+        char host[36], port[5];
+        p += 8;
+        q = strchr(p, '$');
+        if (!q || q - p > 35 || !strchr(q + 1, '$') || strchr(q + 1, '$') - (q + 1) != 4) {
+            /* oryginal tego nie sprawdza i sie zawiesza — tu tylko kasujemy SMS */
+            lcd_puts_P(PSTR("ZLY FORMAT NEW*ADR"));
+            sms_delete();
+            return;
+        }
+        memcpy(host, p, q - p); host[q - p] = '\0';
+        memcpy(port, q + 1, 4); port[4] = '\0';
+        lcd_clear_home();
+        lcd_puts(host); lcd_puts_P(PSTR(":")); lcd_puts(port);
+        config_save_host(host);
+        config_save_port(port);
+        config_save_roaming_mode(3);
+        sms_delete();
+        restart_with_reason(28);
     }
-    sim900_cmd("AT+CMGD=1");               /* skasuj                            */
-    lcd_puts_P(PSTR("SMS IS CLEAR"));
-    (void)buf;
+
+    /* inny SMS: przy aktywnej sesji tresc idzie na serwer jako LOGUJ */
 }
 
 /* ========================================================================== *

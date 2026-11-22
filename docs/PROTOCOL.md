@@ -81,13 +81,27 @@ Obsługa SMS: `AT+CMGF=1`, `AT+CMGR=1`, `AT+CMGD=` (kasowanie).
 
 ## Komendy SMS (zdalne sterowanie)
 
-| Treść SMS   | Offset | Działanie                                   |
-|-------------|--------|---------------------------------------------|
-| `RESET*`    | 0xc318 | restart lokalizatora (`KOMENDA RESET`)      |
-| `RESET-`    | 0xc320 | wariant resetu                              |
-| `NEW*ADR=`  | 0xc352 | zmiana adresu serwera + zapis do EEPROM     |
+Odczyt `@0x80ac`, wykonanie `@0x84dc`, kasowanie `@0x883a` (`AT+CMGD=<n>,3`).
 
-Po przetworzeniu: `SMS IS CLEAR`. Brak wiadomości: `[Brak SMS]`.
+| Treść SMS | Działanie |
+|---|---|
+| `NEW*ADR=<host>$<port>$` | zapis hosta i portu w EEPROM, tryb roamingu 3, skasowanie SMS, restart (kod 28) |
+| `RESET*<PIN>` / `RESET-<PIN>` | ustawienia fabryczne (`lgps01.monitoring-gps.net:3506`, tryb 3), skasowanie SMS, `KOMENDA RESET`, restart (kod 27) |
+| inny tekst | przy aktywnej sesji wysyłany na serwer jako `LOGUJ-;<IMEI>;<tekst>@` |
+
+- **PIN** = 4 ostatnie cyfry IMEI (`Mid(IMEI,12,4)`, na LCD `PIN>`).
+  `NEW*ADR=` PIN-u nie wymaga.
+- Przykład: `NEW*ADR=example.entrydns.org$3506$` — host najwyżej 35 znaków,
+  port dokładnie 4 cyfry, **oba zakończone `$`**.
+- Odczytywana jest **tylko pozycja 1** na karcie SIM (`AT+CMGR=1`). Dopóki
+  SMS z pozycji 1 nie zostanie skasowany, kolejne SMS-y nie są czytane.
+- **Uwaga — błąd w firmware:** brak kontroli długości. SMS `NEW*ADR=` bez `$`
+  (albo z za długim hostem/portem) przepełnia bufory (host 36 B, port 5 B).
+  Urządzenie resetuje się, zanim skasuje SMS, i przy każdym starcie czyta go
+  od nowa — pętla restartów bez połączenia z serwerem. Wyjście: skasować SMS
+  z karty SIM (np. w telefonie).
+
+Po skasowaniu na LCD: `SMS IS CLEAR`. Brak wiadomości: `[Brak SMS]`.
 
 ## Odpowiedź `CONFIG` — format stałopozycyjny
 
