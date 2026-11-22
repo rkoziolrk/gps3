@@ -67,6 +67,15 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     PIN_HIGH(GPS_PWR_PORT, GPS_PWR_BIT);
     PIN_HIGH(GSM_PWR_PORT, GSM_PWR_BIT);
 
+    /* Rozgrzewka autobaud SIM900: po zasileniu moduł domyślnie wykrywa baud
+     * z kilku pierwszych "AT". Dajemy mu czas na boot i kilka "AT" na 9600.
+     * TODO(sprzęt): jeśli PD5 steruje PWRKEY, może być potrzebny impuls LOW. */
+    _delay_ms(1500);
+    for (uint8_t i = 0; i < 5; i++) {
+        uart1_send_line("AT");
+        _delay_ms(300);
+    }
+
     state = G_SEQ;
     step = 0;
     retries = 0;
@@ -128,8 +137,10 @@ static void send_step(uint32_t now)
     const char *cmd = step_cmd(step, tmp, sizeof(tmp));
     f_ok = f_err = f_connect = 0;
     in_cmgr = (step == STEP_CMGR);
-    if (cmd)
+    if (cmd) {
+        dbg_line("GSM>", cmd);          /* pokaż, co wysyłamy do modemu */
         uart1_send_line(cmd);
+    }
     step_t0 = now;
 }
 
