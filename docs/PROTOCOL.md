@@ -29,7 +29,9 @@ PNG-01;<IMEI>;CAN;25;FORM;Er=012/016;A=1 CAN=1 R=3/2 DP=0 OD=0 DS=01 MEM=0:0 SD=
 
 - `HSK-02` — handshake: IMEI, wersja `2.65`, operator, model `MT02-51083`,
   modem, `FGP`, MCC;MNC sieci (`260;03` = Orange PL), typ GPS `PA6C`.
-  Pola `0;0`, `1;TEMP` i `R26;B13` — znaczenie nieustalone.
+  `B13` to wersja oprogramowania modemu: `Mid(odpowiedź AT+CGMR, 14, 3)`
+  (`Revision:1137B13SIM900M64_ST`, wywołanie przed ramką HSK @0x2d7e).
+  Pola `0;0`, `1;TEMP` i `R26` — znaczenie nieustalone.
 - `PNG-01` — ramka okresowa (@0x2372..0x24fe): IMEI, `CAN;<licznik>`
   (RAM 0x0BE9), potem część `FORM;`: `Er=<kod PL>/<kod inne>` (kody przyczyn
   restartu, `docs/EEPROM.md`), `R=3/<tryb roamingu>`, `MEM=<bank>:<adr>`

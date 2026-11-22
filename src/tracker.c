@@ -1205,7 +1205,8 @@ static uint8_t server_handshake(void)
     /* Format potwierdzony logiem:
      *   HSK-02;<IMEI>;2.65;ORANGE;MT02-51083;SIM900;FGP;260;03;0;0;PA6C;1;TEMP;R26;B13
      * Stale "MT02-", "51083", ";SIM900;FGP", ";PA6C", ";1;TEMP;" sa we flashu.
-     * 260;03 = MCC;MNC sieci. Pola 0;0 oraz R26;B13 — znaczenie nieustalone.   */
+     * 260;03 = MCC;MNC sieci. B13 = Mid(AT+CGMR,14,3) — wersja oprogramowania
+ * modemu (potwierdzone logiem). Pola 0;0 oraz R26 — znaczenie nieustalone.   */
     char frame[112];
     strcpy_P(frame, PSTR("HSK-02;"));
     strcat(frame, imei);
