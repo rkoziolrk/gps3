@@ -50,6 +50,9 @@ static void on_sms(const char *body)
     uint8_t n = (uint8_t)strlen(im);
     if (n >= 4) { memcpy(pin, im + n - 4, 4); pin[4] = '\0'; }
 
+    dbg_line("SMS tresc", body);         /* pokaż dokładnie co przyszło */
+    dbg_line("SMS pin", pin);            /* 4 ostatnie cyfry IMEI (do FWUPD) */
+
     switch (sms_parse(body, &cfg, pin)) {
     case SMS_SETADDR:
         cfg_save(&cfg);
@@ -66,7 +69,8 @@ static void on_sms(const char *body)
         ota_request(&cfg);         /* zapis hosta+flagi, restart do bootloadera */
         break;
     default:
-        break;                     /* zwykły tekst / zły format — ignoruj */
+        dbg_line("SMS", "brak akcji (zwykly tekst / zly format / zly PIN)");
+        break;
     }
 }
 

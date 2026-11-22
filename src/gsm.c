@@ -227,7 +227,8 @@ void gsm_tick(uint32_t now)
             state = G_SEND_PROMPT;
         } else if ((now - last_sms_poll) >= SMS_POLL_PERIOD) {
             gsm_route(1);               /* okresowy odczyt SMS (zdalne OTA/host) */
-            in_cmgr = 1; sms_marker = 0;
+            dbg_line("SMS", "poll (AT+CMGR=1)");
+            in_cmgr = 1; sms_marker = 0; sms_have = 0;
             f_ok = f_err = 0;
             uart1_send_line("AT+CMGR=1");
             step_t0 = now;
@@ -254,6 +255,7 @@ void gsm_tick(uint32_t now)
             last_sms_poll = now;
             state = G_ONLINE;
             if (sms_have && sms_handler) { sms_have = 0; sms_handler(sms_body); }
+            else dbg_line("SMS", "poz.1 pusta (FWUPD musi byc na pozycji 1)");
         } else if ((now - step_t0) >= STEP_TIMEOUT) {
             last_sms_poll = now; state = G_ONLINE;
         }
