@@ -14,6 +14,7 @@ Protokół tekstowy, znaki `;` jako separatory. Rodzaje ramek:
 | `HSK-02;`   | 0xbcde  | handshake — zawiera wersję/operatora/typ modułów      |
 | `LOK-02;`   | 0xbcca  | bieżąca lokalizacja                                   |
 | `LOO-02;`   | 0xbe1c  | rekordy zaległe z pamięci (`LOO-BE`…`LOO-EN`)          |
+| `SESJA-;`   | 0xbb86  | znacznik początku sesji: pozycja + UTC + data         |
 | `CONFIG;`   | 0xbd9c  | pobranie / ustawienie konfiguracji                    |
 | `CAN=1`     | 0xbc34  | sekcja danych CAN                                     |
 

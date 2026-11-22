@@ -117,6 +117,14 @@ Sekcje CAN były nagrane przy **odłączonym module CAN**, więc nie dają się
 jeszcze zinterpretować. Serwer dekoduje część pozycyjną (`decode_record()`),
 sekcje CAN pokazuje surowo, a rekord z błędnym bajtem oznacza jako „nieczytelny”.
 
+## Ramka SESJA- (początek sesji)
+
+`SESJA-;<IMEI>;<lon9>E<lat8>N<utc6><date6><tail4>@` — jedna bieżąca pozycja,
+bez wysokości, satelitów i CAN. Przykład (dane zmyślone):
+`SESJA-;<IMEI>;021007020E52138000N1015002211260099@`
+→ `22.11.2026 10:15:00 UTC  52.230000N 21.011700E`. `tail4` to licznik/flaga
+(nieustalone). Serwer dekoduje ją w `handle_frame()`.
+
 ## Test
 
 `server/test_client.py` udaje urządzenie (zmyślony IMEI i trasa) i sprawdza

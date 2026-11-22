@@ -222,6 +222,22 @@ def handle_frame(frame, args):
         # znaczniki początku/końca paczki rekordów zaległych
         return f"{frame[:6]}  (znacznik paczki OLD)", "{OK}"
 
+    if frame.startswith("SESJA-;"):
+        # znacznik początku sesji: SESJA-;IMEI;<lon9>E<lat8>N<utc6><date6><tail4>@
+        p = frame.rstrip("@").split(";")
+        body = p[2] if len(p) > 2 else ""
+        info = f"SESJA  IMEI={p[1] if len(p) > 1 else '?'}"
+        try:
+            lon, ew, lat, ns = body[:9], body[9], body[10:18], body[18]
+            t, dt = body[19:25], body[25:31]
+            latd = (int(lat[:2]) + float(lat[2:]) / 10000 / 60) * (-1 if ns == "S" else 1)
+            lond = (int(lon[:3]) + float(lon[3:]) / 10000 / 60) * (-1 if ew == "W" else 1)
+            info += (f"  start {dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]} UTC"
+                     f"  {latd:.6f}, {lond:.6f}")
+        except (ValueError, IndexError):
+            info += f"  (nieczytelny: {body!r})"
+        return info, "{OK}"
+
     if frame.startswith(("LOGUJ-;", "AUTO--;")):
         p = frame.rstrip("@").split(";", 2)
         return f"{p[0]}  IMEI={p[1] if len(p) > 1 else '?'}  {p[2] if len(p) > 2 else ''}", "{OK}"
