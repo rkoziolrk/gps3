@@ -1,9 +1,10 @@
 # Przepisanie firmware — decyzje projektowe
 
 Dokument zbiera ustalenia do napisania firmware od nowa (czysty C, avr-gcc),
-w miejsce odtworzonego z obrazu BASCOM-a. **Status: wstrzymane** — to notatki
-projektowe, nie plan wykonawczy. Kodu nie piszemy, dopóki rewrite nie zostanie
-odwieszony.
+w miejsce odtworzonego z obrazu BASCOM-a. **Status: realizacja rozpoczęta** —
+pierwszy kompletny wsad powstał i kompiluje się do `build/tracker.hex` (~9 KB).
+Budowa, moduły i procedura bring-upu/zbierania danych: `docs/FIRMWARE.md`.
+Poniżej — decyzje projektowe, które legły u jego podstaw.
 
 ## Platforma (fakty sprzętowe)
 
