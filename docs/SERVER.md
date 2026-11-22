@@ -113,9 +113,28 @@ Przykład rekordu (dane zmyślone):
 | `!` sekcja CAN | 22 | (paliwo/RPM/pedał/sonda) | | niska |
 | `!` sekcja CAN | 11 | `+<…>` | j.w. | niska |
 
-Sekcje CAN były nagrane przy **odłączonym module CAN**, więc nie dają się
-jeszcze zinterpretować. Serwer dekoduje część pozycyjną (`decode_record()`),
-sekcje CAN pokazuje surowo, a rekord z błędnym bajtem oznacza jako „nieczytelny”.
+Rekord z błędnym bajtem serwer oznacza jako „nieczytelny”; część pozycyjną
+dekoduje `decode_record()`.
+
+### Sekcje CAN (z logu jazdy, CAN podłączony)
+
+Dwie sekcje po `!`. Układ odtworzony z korelacji z prędkością/pedałem;
+część pól niepewna. Pojawiają się tylko przy włączonym zapłonie (aktywna
+magistrala CAN) — na postoju z wyłączonym zapłonem są puste.
+
+**CAN1 (22 znaki):**
+
+| pole | poz. | szer. | przykład | znaczenie | pewność |
+|---|---|---|---|---|---|
+| prędkość CAN | 0 | 3 | `045` | km/h z magistrali (koreluje z GPS) | wysoka |
+| pedał gazu | 3 | 4 | `0270` | 0 = puszczony, rośnie przy przyspieszaniu | wysoka |
+| stała | 7 | 1 | `6` | nieustalone (zawsze 6) | — |
+| paliwo | 8 | 4 | `0168` | zużycie/poziom — wysokie na biegu jałowym | niska |
+| przebieg | 12 | 10 | `0012345600` | licznik dystansu (rośnie z jazdą) | średnia |
+
+**CAN2 (11 znaków):** `+` `99` `<4>` `<4>`, np. `+9902800000` —
+pole `volt` (`0280`, ~28.0, napięcie 24 V albo temperatura, niepewne)
+i `stat` (`0000`/`0061`, status/kod).
 
 Każdy wpis związany z ruchem ma znacznik kierunku: `<=` to dane **odebrane**
 od urządzenia (odebrane bajty, ramka, jej interpretacja), `=>` to **wysłane**

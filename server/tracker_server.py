@@ -167,6 +167,25 @@ POS_LAYOUT = [             # (nazwa, szerokość) — część pozycyjna, 45 zna
 ]
 
 
+def decode_can(c1, c2):
+    """Rozbija sekcje CAN na pola. Układ odtworzony z logu jazdy (CAN podłączony),
+    znaczenia potwierdzone korelacją z prędkością/pedałem — część niepewna.
+      CAN1 (22): spd3 pedal4 k1 fuel4 odo10
+      CAN2 (11): '+' '99' volt4 stat4
+    """
+    out = {}
+    if len(c1) == 22:
+        out["can_speed"] = c1[0:3]      # prędkość z CAN [km/h] (koreluje z GPS)
+        out["pedal"] = c1[3:7]          # pedał gazu (0 = puszczony)
+        out["_k"] = c1[7:8]             # stała '6' — nieustalone
+        out["fuel"] = c1[8:12]          # zużycie/paliwo — niepewne (wysokie na biegu jałowym)
+        out["odo"] = c1[12:22]          # licznik przebiegu (rośnie z jazdą)
+    if len(c2) == 11 and c2[0] == "+":
+        out["volt"] = c2[3:7]           # ~28.7 — napięcie(24 V)/temp, niepewne
+        out["stat"] = c2[7:11]          # status/kod
+    return out
+
+
 def decode_record(rec):
     parts = rec.split("!")
     pos = parts[0]
@@ -176,6 +195,7 @@ def decode_record(rec):
     for name, width in POS_LAYOUT:
         out[name] = pos[i:i + width]
         i += width
+    out.update(decode_can(out["can1"], out["can2"]))
     try:
         lat = int(out["lat"][:2]) + int(out["lat"][2:]) / 10000 / 60
         lon = int(out["lon"][:3]) + int(out["lon"][3:]) / 10000 / 60
@@ -192,9 +212,15 @@ def describe_record(rec):
         return "nieczytelny: " + repr(rec)
     t, dt = r["utc"], r["date"]
     when = f"{dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]}" if len(t) == 6 and len(dt) == 6 else "?"
+    if "can_speed" in r:
+        can = (f"CAN[v={int(r['can_speed'])} ped={int(r['pedal'])} "
+               f"fuel={int(r['fuel'])} odo={int(r['odo'])} U={r.get('volt', '?')}]")
+    elif r["can1"] or r["can2"]:
+        can = f"CAN=[{r['can1']}|{r['can2']}]"
+    else:
+        can = "CAN=brak"
     return (f"{when} UTC  {r['lat_deg']:.6f}, {r['lon_deg']:.6f}  "
-            f"v={r['speed']} sat={r['sats']} alt={r['alt_m']}m  "
-            f"CAN=[{r['can1']}|{r['can2']}]")
+            f"v={r['speed']} sat={r['sats']} alt={r['alt_m']}m  {can}")
 
 
 # ---------------------------------------------------------------------------
