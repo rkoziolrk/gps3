@@ -13,8 +13,12 @@ Modyfikacja firmware lokalizatora (ATmega64, obraz flash 64 KiB):
 Przed każdą zmianą skrypt sprawdza, czy w pliku są oryginalne bajty — inny
 obraz (inna wersja firmware) zostanie odrzucony.
 
-  python3 patch_firmware.py flash.bin flash_patched.bin --host example.entrydns.org
-  python3 patch_firmware.py flash.bin flash_patched.bin --host example.org --hex flash_patched.hex
+Uzycie (najprostsze — plik wejsciowy i host):
+
+  python3 patch_firmware.py flash.bin --host example.entrydns.org
+
+Powstana obok: flash_patched.bin oraz flash_patched.hex (ten sam obraz).
+Inna nazwa wyjscia:  -o moj.bin      Inny port:  --port 3506
 """
 
 import argparse
@@ -54,14 +58,23 @@ def ihex(data):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("src")
-    ap.add_argument("dst")
-    ap.add_argument("--host", required=True, help="nowy domyślny host (najwyżej 25 znaków)")
-    ap.add_argument("--port", help="nowy domyślny port (4 cyfry); bez tej opcji zostaje 3506")
-    ap.add_argument("--hex", help="dodatkowo zapisz Intel HEX")
+    ap = argparse.ArgumentParser(
+        description="Zmiana domyslnego adresu serwera i zdjecie blokady adresu w firmware.",
+        epilog="Przyklad:\n  python3 patch_firmware.py flash.bin --host example.entrydns.org",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("src", metavar="PLIK_WEJSCIOWY", help="oryginalny obraz flash (.bin, 64 KiB)")
+    ap.add_argument("--host", required=True, metavar="HOST",
+                    help="nowy domyslny host serwera (najwyzej 25 znakow)")
+    ap.add_argument("-o", "--out", metavar="PLIK_WYJSCIOWY",
+                    help="nazwa pliku .bin (domyslnie: <wejscie>_patched.bin)")
+    ap.add_argument("--port", metavar="NNNN", help="nowy domyslny port (4 cyfry); domyslnie zostaje 3506")
+    ap.add_argument("--no-hex", action="store_true", help="nie zapisuj pliku .hex")
     ap.add_argument("--keep-lock", action="store_true", help="tylko zmiana adresu, bez zdejmowania blokady")
     a = ap.parse_args()
+
+    import os
+    dst = a.out or (os.path.splitext(a.src)[0] + "_patched.bin")
+    hexfile = None if a.no_hex else os.path.splitext(dst)[0] + ".hex"
 
     host = a.host.strip()
     if not 1 <= len(host) <= 25:
@@ -71,6 +84,8 @@ def main():
     if a.port is not None and not (len(a.port) == 4 and a.port.isdigit()):
         sys.exit("BŁĄD: port musi mieć dokładnie 4 cyfry")
 
+    if dst == a.src:
+        sys.exit("BLAD: plik wyjsciowy nie moze byc taki sam jak wejsciowy")
     img = bytearray(open(a.src, "rb").read())
     if len(img) != 65536:
         sys.exit(f"BŁĄD: obraz ma {len(img)} B, oczekiwano 65536 (ATmega64)")
@@ -90,11 +105,11 @@ def main():
             img[addr:addr + len(new)] = new
             print(desc)
 
-    open(a.dst, "wb").write(img)
-    print(f"zapisano {a.dst}")
-    if a.hex:
-        open(a.hex, "w").write(ihex(bytes(img)))
-        print(f"zapisano {a.hex}")
+    open(dst, "wb").write(img)
+    print(f"zapisano {dst}")
+    if hexfile:
+        open(hexfile, "w").write(ihex(bytes(img)))
+        print(f"zapisano {hexfile}")
 
 
 if __name__ == "__main__":
