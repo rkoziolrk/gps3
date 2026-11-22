@@ -136,30 +136,32 @@ def config_reply(overrides=None):
 
 
 # ---------------------------------------------------------------------------
-# Rekord pozycji z ramki LOK (funkcja 0x210e) — układ PRAWDOPODOBNY.
-# Szerokości z wartości domyślnych parsera NMEA (@0x4b20), znaczenia z etykiet
-# LCD. Początek ma stałą szerokość; reszta (licznik, liczniki zdarzeń, część
-# "!...!" i dane CAN) nie jest rozpisana i jest zwracana w postaci surowej.
+# Rekord pozycji z ramek LOK/LOO (funkcja 0x210e).
+# Układ POTWIERDZONY na prawdziwej ramce LOO-02 z urządzenia.
+# Część pozycyjna (45 znaków) ma stałe szerokości; po niej dwie sekcje CAN
+# rozdzielone '!'. Przy odłączonym CAN sekcje CAN są bezużyteczne.
+#
+#   lon 9  (ddd mm.mmmm bez kropki) + E/W 1
+#   lat 8  (dd  mm.mmmm bez kropki) + N/S 1
+#   alt 4  [m]   sat 2   speed 3    utc 6 (hhmmss)   date 6 (ddmmrr)
+#   tail 5 — licznik/flagi (nieustalone)
+#   ! <CAN 22> ! <CAN 11>           (paliwo/RPM/pedał/sonda — docs/PROTOCOL.md)
 # ---------------------------------------------------------------------------
-RECORD_LAYOUT = [          # (nazwa, szerokość)
-    ("lon", 9),            # dddmm.mmmm bez kropki      (0x0BA1)
-    ("ew", 1),             # E / W                      (0x0BAF)
-    ("lat", 8),            # ddmm.mmmm bez kropki       (0x0B95)
-    ("ns", 1),             # N / S                      (0x0BAD)
-    ("alt_m", 4),          # wysokość [m]   — niepewne  (0x0BCF)
-    ("sats", 2),           # liczba satelitów           (0x0BB1)
-    ("speed_kmh", 3),      # prędkość [km/h]            (0x0BB5)
-    ("utc", 6),            # hhmmss                     (0x0B8D)
-    ("date", 6),           # ddmmrr         — niepewne  (0x0BBD)
+POS_LAYOUT = [             # (nazwa, szerokość) — część pozycyjna, 45 znaków
+    ("lon", 9), ("ew", 1), ("lat", 8), ("ns", 1),
+    ("alt_m", 4), ("sats", 2), ("speed", 3), ("utc", 6), ("date", 6), ("tail", 5),
 ]
 
 
 def decode_record(rec):
-    out, pos = {}, 0
-    for name, width in RECORD_LAYOUT:
-        out[name] = rec[pos:pos + width]
-        pos += width
-    out["rest"] = rec[pos:]
+    parts = rec.split("!")
+    pos = parts[0]
+    out = {"can1": parts[1] if len(parts) > 1 else "",
+           "can2": parts[2] if len(parts) > 2 else ""}
+    i = 0
+    for name, width in POS_LAYOUT:
+        out[name] = pos[i:i + width]
+        i += width
     try:
         lat = int(out["lat"][:2]) + int(out["lat"][2:]) / 10000 / 60
         lon = int(out["lon"][:3]) + int(out["lon"][3:]) / 10000 / 60
@@ -173,11 +175,12 @@ def decode_record(rec):
 def describe_record(rec):
     r = decode_record(rec)
     if "lat_deg" not in r:
-        return rec
+        return "nieczytelny: " + repr(rec)
     t, dt = r["utc"], r["date"]
-    return (f"{dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]} UTC  "
-            f"{r['lat_deg']:.6f}, {r['lon_deg']:.6f}  {int(r['speed_kmh'] or 0)} km/h  "
-            f"sat={r['sats']} alt={r['alt_m']}  reszta={r['rest']!r}")
+    when = f"{dt[:2]}.{dt[2:4]}.20{dt[4:]} {t[:2]}:{t[2:4]}:{t[4:]}" if len(t) == 6 and len(dt) == 6 else "?"
+    return (f"{when} UTC  {r['lat_deg']:.6f}, {r['lon_deg']:.6f}  "
+            f"v={r['speed']} sat={r['sats']} alt={r['alt_m']}m  "
+            f"CAN=[{r['can1']}|{r['can2']}]")
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +208,19 @@ def handle_frame(frame, args):
                 f"kody_restartu(PL/inne)={er}  stan={p[-1] if len(p) > 6 else ''}")
         return info, "{OK}"
 
-    if frame.startswith("LOK-02;"):
+    if frame.startswith(("LOK-02;", "LOO-02;")):
+        kind = frame[:6]                       # LOK = bieżące, LOO = zaległe z pamięci
         head, _, rest = frame.partition("$")
         records = [r for r in rest.split("$") if r]
-        lines = [f"LOK  IMEI={head[7:]}  rekordow={len(records)}"]
+        lines = [f"{kind}  IMEI={head[7:]}  rekordów={len(records)}"]
         for i, r in enumerate(records):
             lines.append(f"    rekord {i + 1}: {r}")
             lines.append(f"              -> {describe_record(r)}")
         return "\n".join(lines), "{OK}"
+
+    if frame.startswith(("LOO-BE;", "LOO-EN;")):
+        # znaczniki początku/końca paczki rekordów zaległych
+        return f"{frame[:6]}  (znacznik paczki OLD)", "{OK}"
 
     if frame.startswith(("LOGUJ-;", "AUTO--;")):
         p = frame.rstrip("@").split(";", 2)

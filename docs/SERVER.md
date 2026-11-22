@@ -84,29 +84,38 @@ firmware ustawia sam przy starcie (`22`=06, `37`=018, `41`=09, `49`=45,
 `59`=4), a resztę jako zera. Pozycje 6 i 12 to minutniki zmniejszane co
 sekundę przez zegar (przerwanie TIMER1_OVF).
 
-## Ramka LOK
+## Ramki LOK / LOO
 
-`LOK-02;<IMEI>$`, potem do `n` rekordów (n z poz. 18 CONFIG), każdy
-zakończony `$`. Rekord składa funkcja `0x210e`, sklejając pola **bez
-separatorów**, więc początek ma stałą szerokość. Układ **prawdopodobny** —
-szerokości z wartości wpisywanych przy błędach parsera NMEA (`@0x4b20`),
-znaczenia z etykiet LCD (`UTC-`, `ALT-`, `LON-`, `LAT-`, `SAT-`, `SPEED-`):
+- `LOK-02;<IMEI>$<rekord>$…` — bieżące pozycje (do `n` rekordów, n z poz. 18 CONFIG).
+- `LOO-02;<IMEI>$<rekord>$…` — rekordy zaległe z pamięci, w paczce między
+  `LOO-BE;<IMEI>;<licznik>@` i `LOO-EN;…`.
 
-| pole | szer. | przykład | źródło | pewność |
+Rekord składa funkcja `0x210e`, sklejając pola **bez separatorów**. Układ
+**potwierdzony na prawdziwej ramce** `LOO-02` z urządzenia. Część pozycyjna ma
+45 znaków, po niej dwie sekcje CAN rozdzielone `!`.
+
+Przykład rekordu:
+`020289030E53443841N01180903613170412071900031!0390000401980239937200!+9902770000`
+→ `12.07.2019 13:17:04 UTC  53.739735N 20.481717E  v=036 sat=09 alt=118 m`.
+
+| pole | szer. | przykład | znaczenie | pewność |
 |---|---|---|---|---|
-| długość geogr. `dddmm.mmmm` bez kropki | 9 | `021007000` | GGA | wysoka |
-| `E` / `W` | 1 | `E` | GGA | wysoka |
-| szerokość geogr. `ddmm.mmmm` bez kropki | 8 | `52138000` | GGA | wysoka |
-| `N` / `S` | 1 | `N` | GGA | wysoka |
-| wysokość [m] | 4 | `0110` | GGA | średnia |
-| liczba satelitów | 2 | `07` | GGA | średnia |
-| prędkość [km/h] | 3 | `048` | VTG | średnia |
-| czas UTC `hhmmss` | 6 | `120100` | GGA | wysoka |
-| data `ddmmrr` | 6 | `010126` | RMC | średnia |
-| licznik (ruch/postój), 2 liczby, `!<pole>!`, 3 wartości CAN | — | — | — | nieznane |
+| długość geogr. `dddmm.mmmm` bez kropki | 9 | `020289030` | 020°28.9030′ | wysoka |
+| `E` / `W` | 1 | `E` | | wysoka |
+| szerokość geogr. `ddmm.mmmm` bez kropki | 8 | `53443841` | 53°44.3841′ | wysoka |
+| `N` / `S` | 1 | `N` | | wysoka |
+| wysokość [m] | 4 | `0118` | 118 m | wysoka |
+| liczba satelitów | 2 | `09` | | wysoka |
+| prędkość | 3 | `036` | jednostka nieustalona | średnia |
+| czas UTC `hhmmss` | 6 | `131704` | 13:17:04 | wysoka |
+| data `ddmmrr` | 6 | `120719` | 12.07.2019 | wysoka |
+| ogon | 5 | `00031` | licznik/flagi, nieustalone | niska |
+| `!` sekcja CAN | 22 | `0390000401980239937200` | paliwo/RPM/pedał/sonda | niska |
+| `!` sekcja CAN | 11 | `+9902770000` | j.w. | niska |
 
-Serwer dekoduje początek rekordu (`decode_record()`), a całość zawsze zapisuje
-też w postaci surowej. Układ trzeba potwierdzić na prawdziwej ramce.
+Sekcje CAN były nagrane przy **odłączonym module CAN**, więc nie dają się
+jeszcze zinterpretować. Serwer dekoduje część pozycyjną (`decode_record()`),
+sekcje CAN pokazuje surowo, a rekord z błędnym bajtem oznacza jako „nieczytelny”.
 
 ## Test
 
