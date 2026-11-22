@@ -89,6 +89,18 @@ static uint8_t at_ok(const char *cmd, uint16_t ms)
     return 0;
 }
 
+/* Czytaj linie aż pojawi się podciąg tok (albo ERROR/timeout). */
+static uint8_t wait_token(const char *tok, uint16_t ms)
+{
+    char ln[48];
+    for (uint8_t k = 0; k < 12; k++) {
+        if (u1_getline(ln, sizeof(ln), ms) < 0) return 0;
+        if (strstr(ln, tok)) return 1;
+        if (!strncmp(ln, "ERROR", 5)) return 0;
+    }
+    return 0;
+}
+
 /* ---------------- SPM: zapis strony aplikacji --------------------------- */
 static void program_page(uint32_t page, uint8_t *buf)
 {
@@ -156,10 +168,13 @@ static uint8_t do_ota(void)
         for (uint8_t i = 0; i < 5; i++) { u1_line("AT"); _delay_ms(300); }
     }
     if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
-    if (!at_ok("AT+CIPSHUT", 2000)) { /* ignoruj (zwraca "SHUT OK") */ }
 
-    /* Czekaj na rejestrację w sieci (AT+CREG? -> ",1" dom. lub ",5" roaming).
-     * Bez tego CIICR pada — aplikacja miała na to czas w krokach CREG/COPS. */
+    /* CIPSHUT — zamknij ewentualną starą sesję z aplikacji (zwraca "SHUT OK"). */
+    u0_puts("BOOT: CIPSHUT\r\n");
+    u1_line("AT+CIPSHUT");
+    wait_token("SHUT OK", 8000);        /* toleruj — i tak idziemy dalej */
+
+    /* Rejestracja w sieci (AT+CREG? -> ",1" dom. lub ",5" roaming). */
     {
         uint8_t reg = 0;
         for (uint8_t k = 0; k < 20 && !reg; k++) {
@@ -173,13 +188,32 @@ static uint8_t do_ota(void)
         if (!reg) { u0_puts("BOOT: brak rejestracji\r\n"); return 0; }
     }
     u0_puts("BOOT: zarejestrowany\r\n");
-    at_ok("AT+CGATT=1", 6000);          /* GPRS attach (toleruj — CIICR i tak sprawdzi) */
+
+    u0_puts("BOOT: CGATT\r\n");
+    at_ok("AT+CGATT=1", 10000);         /* GPRS attach (toleruj) */
 
     char cstt[64];
     strcpy(cstt, "AT+CSTT=\"" APN_DEFAULT "\",\"\",\"\"");
-    if (!at_ok(cstt, 3000)) return 0;
-    if (!at_ok("AT+CIICR", 6000)) return 0;
-    if (!at_ok("AT+CIPHEAD=0", 1000)) return 0;
+    u0_puts("BOOT: CSTT\r\n");
+    if (!at_ok(cstt, 3000)) { u0_puts("BOOT: CSTT FAIL\r\n"); return 0; }
+
+    u0_puts("BOOT: CIICR\r\n");
+    if (!at_ok("AT+CIICR", 10000)) { u0_puts("BOOT: CIICR FAIL\r\n"); return 0; }
+
+    /* CIFSR — potwierdź IP (odpowiedź to adres, nie "OK"); bramka na GPRS. */
+    u0_puts("BOOT: CIFSR\r\n");
+    {
+        uint8_t ip = 0;
+        u1_line("AT+CIFSR");
+        for (uint8_t k = 0; k < 6; k++) {
+            if (u1_getline(ln, sizeof(ln), 3000) < 0) break;
+            if (ln[0] >= '0' && ln[0] <= '9') { ip = 1; break; }
+            if (!strncmp(ln, "ERROR", 5)) break;
+        }
+        if (!ip) { u0_puts("BOOT: brak IP (GPRS down)\r\n"); return 0; }
+    }
+
+    if (!at_ok("AT+CIPHEAD=0", 1000)) { u0_puts("BOOT: CIPHEAD FAIL\r\n"); return 0; }
 
     /* CIPSTART: host+port z bloku OTA w EEPROM (zapisane przez aplikację). */
     char host[HOST_MAXLEN];
@@ -198,6 +232,7 @@ static uint8_t do_ota(void)
     strcat(cmd, host);
     strcat(cmd, "\",");
     { char ps[6]; utoa(port, ps, 10); strcat(cmd, ps); }
+    u0_puts("BOOT: CIPSTART\r\n");
     u1_line(cmd);
     /* czekaj CONNECT OK */
     uint8_t conn = 0;
