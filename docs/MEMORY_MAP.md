@@ -36,7 +36,7 @@ Pozostałe wektory → `reti` (nieużywane).
 | UCSR0B / UCSR1B| 0x18    | RXEN \| TXEN                                    |
 | TCCR1B / TCNT1 | 0x04 / 0x85EE | Timer1 — zegar 1 s (preskaler 256)       |
 | ADCSRA / ADMUX | 0x86 / 0xC0   | ADC włączony, odniesienie 2,56 V         |
-| DDRA           | .3,.4   | wyjścia (PORTA.3/.4 = 1)                        |
+| DDRA           | .3,.4   | **mux źródła UART** (jedna linia GPS/modem/CAN): modem=(PA3=0,PA4=1), GPS=(PA3=1,PA4=1), CAN=(PA3=1,PA4=0) |
 | DDRD           | .5,.6,.7| impulsy (idle LOW): PD6=włącz modem "WLACZAM MODEM", PD5=reset modemu, PD7=reset GPS |
 | DDRB           | .4,.6   | CAN / LED (PORTB.6 = 1)                         |
 | DDRC           | .0–.5   | LCD HD44780 4-bit: PC0–3=D4–7, PC4=RS, PC5=E    |

@@ -48,6 +48,17 @@ static volatile uint8_t f_ok, f_err, f_connect, f_prompt, f_sendok, f_closed;
 const char *gsm_imei(void)   { return imei; }
 uint8_t     gsm_online(void) { return state == G_ONLINE || state == G_SEND_PROMPT || state == G_SEND_DATA; }
 
+/* Przełącznik źródła współdzielonej linii UART (PA3). W oryginale konteksty
+ * modemu ustawiają PA3=0, a GPS jest słyszalny przy PA3=1 (PA4 pozostaje 1).
+ *   modem=1 -> PA3=0 (wycisz GPS, słuchaj modemu)
+ *   modem=0 -> PA3=1 (słuchaj GPS)
+ * Patrz docs/MEMORY_MAP.md. */
+static void gsm_route(uint8_t modem)
+{
+    if (modem) PIN_LOW(PWRLATCH_PORT, PWRLATCH_A3);
+    else       PIN_HIGH(PWRLATCH_PORT, PWRLATCH_A3);
+}
+
 void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
 {
     cfg = *c;
@@ -78,6 +89,8 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
     uart0_puts("MODEM: boot ~5s...\r\n");
     _delay_ms(5000);                         /* oryginał czeka 15 s; skrócone */
+
+    gsm_route(1);                            /* słuchaj modemu (wycisz GPS)   */
 
     /* Rozgrzewka autobaud SIM900: kilka "AT" pozwala wykryć 9600. */
     for (uint8_t i = 0; i < 5; i++) {
@@ -146,6 +159,7 @@ static void send_step(uint32_t now)
     const char *cmd = step_cmd(step, tmp, sizeof(tmp));
     f_ok = f_err = f_connect = 0;
     in_cmgr = (step == STEP_CMGR);
+    gsm_route(1);                       /* na czas komendy i odpowiedzi: modem */
     if (cmd) {
         dbg_line("GSM>", cmd);          /* pokaż, co wysyłamy do modemu */
         uart1_send_line(cmd);
@@ -195,10 +209,13 @@ void gsm_tick(uint32_t now)
     case G_ONLINE:
         if (f_closed) { f_closed = 0; dbg_line("GSM", "TCP CLOSED -> reconnect"); state = G_SEQ; step = STEP_LAST; step_t0 = 0; return; }
         if (has_pending) {
+            gsm_route(1);               /* wysyłka -> słuchaj modemu */
             f_prompt = 0;
             uart1_send_line("AT+CIPSEND");
             step_t0 = now;
             state = G_SEND_PROMPT;
+        } else {
+            gsm_route(0);               /* bezczynny online -> słuchaj GPS */
         }
         break;
 
