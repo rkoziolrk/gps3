@@ -77,3 +77,27 @@ nagłówku `src/tracker.c` (sekcja `[LIB]`). Najczęściej wołane:
 Funkcje `0x186c` i `0x1c5e` to odczyt pól EEPROM `0x3C` i `0x5A`, a nie
 parsery NMEA. Parsowanie NMEA (RMC/GGA/VTG) jest w funkcji od `0x4b20`.
 Pełna mapa pól: `docs/EEPROM.md`.
+
+## Wyzwalanie zapisu rekordu pozycji (@0x5a0–0x8ba)
+
+To nie jest stały interwał czasowy, tylko maszyna stanów oparta o ruch:
+
+1. Co ~1 s moduł PA6C daje nowy fiks; ISR ustawia flagę „nowe dane GPS”
+   (`0x0B52`) i zeruje licznik sekund „Czas-” (`0x0AA0`).
+2. Funkcja `0x465a` liczy **odległość między kolejnymi pozycjami** (z LAT/LON,
+   arytmetyka 32-bit) i klasyfikuje stan **RUCH `R` / POSTOJ `P`** (RAM `0x0266`).
+   Detekcja ruchu jest więc dystansowa, nie prędkościowa.
+3. Licznik `0x0264` rośnie **tylko w ruchu** (inkrementacja `@0x48f4` za
+   `strcmp(stan,"R")`); przy przejściu w POSTOJ jest przepisywany do `0x0260`
+   i zerowany (`@0x4a30`).
+4. Rekord jest zapisywany (`call 0x210e @0x6e2`), gdy jednocześnie:
+   flaga nowego fiksu `0x0B52==1`, licznik ruchu `0x0260 < próg`
+   (próg = pole poz. 22 odpowiedzi CONFIG, RAM `0x0268`) oraz flaga stanu = `1`.
+   Ścieżka „WPIS DO DANYCH DO WYSLANIA J=” iteruje sloty bufora „OLD”
+   (licznik `J=` w `0x0B3F`, slot 151 B).
+5. Na postoju osobna ścieżka (`0x792`, brama `0x0265`) zapisuje rekord POSTOJ.
+
+Efektywny odstęp (w realnych danych ~20 s w ruchu) wynika z: fiksów 1 Hz,
+progu dystansu ruchu i pola poz. 22 z CONFIG — jest konfigurowalny z serwera,
+nie zaszyty na stałe. Pewne: dystansowa detekcja ruchu i inkrementacja tylko
+w ruchu. Mniej pewne: dokładna semantyka progu `0x0268` vs licznika `0x0260`.
