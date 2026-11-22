@@ -68,7 +68,8 @@ def log(msg, *codes, level=1):
         first, *rest = msg.split("\n")
         out = [paint(stamp, DIM) + " " + paint(first, *codes)]
         for line in rest:                   # dalsze linie bloku (rekordy LOK)
-            out.append(paint(line, GREEN) if line.lstrip().startswith("->") else paint(line, DIM))
+            green = line.lstrip().startswith(("->", "rekord"))
+            out.append(paint(line, GREEN) if green else paint(line, DIM))
         print("\n".join(out), flush=True)
     if LOG_FILE and level <= FILE_LEVEL:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -242,11 +243,12 @@ def handle_frame(frame, args):
         records = [r for r in rest.split("$") if r]
         lines = [f"{kind}  IMEI={head[7:]}  rekordów={len(records)}"]
         for i, r in enumerate(records):
-            lines.append(f"    rekord {i + 1}: {r}")
-            lines.append(f"              -> {describe_record(r)}")
-            if VERBOSITY >= 3:
+            lines.append(f"    rekord {i + 1}: -> {describe_record(r)}")
+            if VERBOSITY >= 3:                  # -vv: surowy rekord i rozbicie pól
                 d = decode_record(r)
+                lines.append(f"        raw   = {r}")
                 lines += [f"        {k:6}= {d.get(k, '')}" for k, _ in POS_LAYOUT]
+                lines += [f"        {k:6}= {d.get(k, '')}" for k in ("can1", "can2")]
         return "\n".join(lines), "{OK}"
 
     if frame.startswith(("LOO-BE;", "LOO-EN;")):
