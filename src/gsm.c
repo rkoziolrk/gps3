@@ -18,7 +18,9 @@
 #include <string.h>
 #include <stdio.h>
 
-enum { G_OFF, G_SEQ, G_ONLINE, G_SEND_PROMPT, G_SEND_DATA };
+enum { G_OFF, G_SEQ, G_ONLINE, G_SEND_PROMPT, G_SEND_DATA, G_SMS_READ, G_SMS_DEL };
+
+#define SMS_POLL_PERIOD 60       /* [s] jak często czytać SMS gdy online */
 
 static cfg_t        cfg;
 static void       (*sms_handler)(const char *);
@@ -36,6 +38,7 @@ static uint8_t      in_cifsr;        /* trwa AT+CIFSR — odpowiedź to IP, nie 
 static uint8_t      sms_marker;      /* widziano nagłówek +CMGR:              */
 static uint8_t      sms_have;        /* złapano treść SMS                     */
 static char         sms_body[80];
+static uint32_t     last_sms_poll;   /* ostatni odczyt SMS w trybie online    */
 
 /* Flagi ustawiane przez gsm_feed(), czytane przez gsm_tick(). */
 static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
@@ -49,7 +52,7 @@ static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
 #define STEP_LAST      12
 
 const char *gsm_imei(void)   { return imei; }
-uint8_t     gsm_online(void) { return state == G_ONLINE || state == G_SEND_PROMPT || state == G_SEND_DATA; }
+uint8_t     gsm_online(void) { return state >= G_ONLINE; }   /* ONLINE i stany pochodne */
 
 /* Przełącznik źródła współdzielonej linii UART (PA3). W oryginale konteksty
  * modemu ustawiają PA3=0, a GPS jest słyszalny przy PA3=1 (PA4 pozostaje 1).
@@ -69,6 +72,7 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     imei[0] = '\0';
     has_pending = 0;
     sms_have = sms_marker = in_cmgr = 0;
+    last_sms_poll = 0;
 
     /* Piny modułów: wyjścia, stan NISKI (idle) — jak w oryginale. */
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
@@ -180,7 +184,7 @@ void gsm_tick(uint32_t now)
         if (step_t0 == 0) { send_step(now); return; }
 
         if (step == STEP_LAST) {
-            if (f_connect) { state = G_ONLINE; retries = 0; dbg_line("GSM", "online (TCP)"); }
+            if (f_connect) { state = G_ONLINE; retries = 0; last_sms_poll = now; dbg_line("GSM", "online (TCP)"); }
             else if ((now - step_t0) >= STEP_TIMEOUT) {
                 if (++retries > MAX_RETRIES) { step = 0; retries = 0; step_t0 = 0; f_closed = 0; }
                 else send_step(now);
@@ -221,8 +225,37 @@ void gsm_tick(uint32_t now)
             uart1_send_line("AT+CIPSEND");
             step_t0 = now;
             state = G_SEND_PROMPT;
+        } else if ((now - last_sms_poll) >= SMS_POLL_PERIOD) {
+            gsm_route(1);               /* okresowy odczyt SMS (zdalne OTA/host) */
+            in_cmgr = 1; sms_marker = 0;
+            f_ok = f_err = 0;
+            uart1_send_line("AT+CMGR=1");
+            step_t0 = now;
+            state = G_SMS_READ;
         } else {
             gsm_route(0);               /* bezczynny online -> słuchaj GPS */
+        }
+        break;
+
+    case G_SMS_READ:                    /* czekamy na OK po AT+CMGR=1 */
+        if (f_ok) {
+            in_cmgr = 0;
+            f_ok = f_err = 0;
+            uart1_send_line("AT+CMGD=1");
+            step_t0 = now;
+            state = G_SMS_DEL;
+        } else if ((now - step_t0) >= STEP_TIMEOUT) {
+            in_cmgr = 0; last_sms_poll = now; state = G_ONLINE;
+        }
+        break;
+
+    case G_SMS_DEL:                     /* po skasowaniu SMS -> akcja */
+        if (f_ok || f_err) {
+            last_sms_poll = now;
+            state = G_ONLINE;
+            if (sms_have && sms_handler) { sms_have = 0; sms_handler(sms_body); }
+        } else if ((now - step_t0) >= STEP_TIMEOUT) {
+            last_sms_poll = now; state = G_ONLINE;
         }
         break;
 
