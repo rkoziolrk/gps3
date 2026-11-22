@@ -35,6 +35,8 @@ docs/     PROTOCOL.md         — ramki protokołu serwera + komendy AT/SMS
           EEPROM.md           — mapa pól EEPROM (zweryfikowana ze zrzutem)
           ROAMING.md          — tryby roamingu i tabela krajów/operatorów
           SERVER.md           — wymagania po stronie serwera
+tools/    patch_firmware.py   — zmiana adresu domyślnego i zdjęcie blokady
+          (python3 tools/patch_firmware.py flash.bin --host twoj.host.pl)
 server/   tracker_server.py   — serwer testowy (Python 3)
           test_client.py      — symulacja urządzenia + sprawdzenie odpowiedzi
 reverse/  flash.bin           — oryginalny obraz flash (materiał źródłowy)

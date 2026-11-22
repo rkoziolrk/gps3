@@ -8,7 +8,26 @@ Oryginalny firmware przy każdym starcie (`@0x7b4c`, przed połączeniem)
 zastępuje host spoza `lgpsNN.monitoring-gps.net` (dokładnie 25 znaków) oraz
 port spoza `35xx` adresem fabrycznym `lgps01.monitoring-gps.net:3506`.
 Własnego serwera nie da się ustawić samym SMS-em ani zapisem EEPROM — trzeba
-zmienić firmware (np. domyślny adres we flashu pod `0xbbe0`, jedyna kopia).
+zmienić firmware. Robi to `tools/patch_firmware.py`:
+
+- domyślny host pod `0xbbe0` (jedyna kopia, najwyżej 25 znaków),
+- `0x7ba8`: `brne .+4` → `rjmp 0x7cb6` — host nie jest porównywany z domeną
+  producenta,
+- `0x7d62`: `brne .+4` → `rjmp .+4` — port nie musi zaczynać się od `35`
+  (kontrola długości = 4 cyfry zostaje, bo zakłada ją m.in. odpowiedź HSK).
+
+Skrypt sprawdza przed zmianą, czy w pliku są oryginalne bajty. Firmware nie
+liczy sumy kontrolnej flasha (jedyne `lpm` są w procedurach bibliotecznych).
+
+```bash
+# tworzy flash_patched.bin i flash_patched.hex obok pliku wejściowego:
+python3 tools/patch_firmware.py flash.bin --host example.entrydns.org
+```
+
+Po wgraniu: jeśli EEPROM został skasowany razem z flashem, urządzenie użyje
+nowego adresu domyślnego. Jeśli EEPROM został zachowany (bit EESAVE), jest tam
+wciąż adres producenta — wtedy wyślij SMS `NEW*ADR=<host>$<port>$`, który po
+zdjęciu blokady nie jest już cofany.
 
 ## Transport
 
