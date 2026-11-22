@@ -400,6 +400,18 @@ async def answer(frame_raw, who, writer, args):
         log(f"[{who}] {RX}błąd obsługi ramki: {e!r}", BOLD, RED, level=0)
         info, reply = f"BŁĄD: {frame}", "{OK}"
     log(f"[{who}] {RX}{safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]), level=0)
+
+    # OTA: obraz firmware wysyłamy porcjami poniżej tempa 9600 bodów (~960 B/s),
+    # żeby nie przepełnić bufora TCP modemu (inaczej bootloader gubi bajty -> CRC).
+    if frame.startswith("FWREQ") and reply.startswith("FW "):
+        data = reply.encode("latin-1")
+        for i in range(0, len(data), 256):
+            writer.write(data[i:i + 256])
+            await writer.drain()
+            await asyncio.sleep(0.30)       # 256 B / 0,30 s = ~850 B/s < 960 B/s
+        log(f"[{who}] {TX}OTA: wysłano {len(data)} B porcjami", BOLD, GREEN, level=0)
+        return
+
     writer.write(reply.encode("latin-1"))
     await writer.drain()
     log(f"[{who}] {TX}odpowiedź: {reply}", BOLD, GREEN, level=1)
