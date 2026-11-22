@@ -37,7 +37,7 @@ Pozostałe wektory → `reti` (nieużywane).
 | TCCR1B / TCNT1 | 0x04 / 0x85EE | Timer1 — zegar 1 s (preskaler 256)       |
 | ADCSRA / ADMUX | 0x86 / 0xC0   | ADC włączony, odniesienie 2,56 V         |
 | DDRA           | .3,.4   | wyjścia (PORTA.3/.4 = 1)                        |
-| DDRD           | .5,.6,.7| GSM_PWR / GPS_PWR / RESET                       |
+| DDRD           | .5,.6,.7| impulsy (idle LOW): PD6=włącz modem "WLACZAM MODEM", PD5=reset modemu, PD7=reset GPS |
 | DDRB           | .4,.6   | CAN / LED (PORTB.6 = 1)                         |
 | DDRC           | .0–.5   | LCD HD44780 4-bit: PC0–3=D4–7, PC4=RS, PC5=E    |
 | EEARL/EEARH    | —       | wewnętrzny EEPROM AVR (zapis @0xb810)           |

@@ -56,21 +56,30 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     has_pending = 0;
     sms_have = sms_marker = in_cmgr = 0;
 
-    PIN_OUT(GSM_PWR_DDR, GSM_PWR_BIT);
-    PIN_OUT(GPS_PWR_DDR, GPS_PWR_BIT);
-    PIN_OUT(HWRST_DDR, HWRST_BIT);
+    /* Piny modułów: wyjścia, stan NISKI (idle) — jak w oryginale. */
+    PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
+    PIN_OUT(MODEM_DDR, MODEM_RST_BIT);
+    PIN_OUT(MODEM_DDR, GPS_RST_BIT);
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+    PIN_LOW(MODEM_PORT, MODEM_RST_BIT);
+    PIN_LOW(MODEM_PORT, GPS_RST_BIT);
     PIN_OUT(LED_DDR, LED_BIT);
     PIN_OUT(PWRLATCH_DDR, PWRLATCH_A3);
     PIN_OUT(PWRLATCH_DDR, PWRLATCH_A4);
-    PIN_HIGH(PWRLATCH_DDR, PWRLATCH_A3);
+    PIN_HIGH(PWRLATCH_PORT, PWRLATCH_A3);
+    PIN_HIGH(PWRLATCH_PORT, PWRLATCH_A4);
 
-    PIN_HIGH(GPS_PWR_PORT, GPS_PWR_BIT);
-    PIN_HIGH(GSM_PWR_PORT, GSM_PWR_BIT);
-
-    /* Rozgrzewka autobaud SIM900: po zasileniu moduł domyślnie wykrywa baud
-     * z kilku pierwszych "AT". Dajemy mu czas na boot i kilka "AT" na 9600.
-     * TODO(sprzęt): jeśli PD5 steruje PWRKEY, może być potrzebny impuls LOW. */
+    /* Włączenie modemu jak oryginał: impuls HIGH na PD6 ("WLACZAM MODEM"),
+     * potem czas na boot. Bez tego SIM900 nie startuje → brak odpowiedzi AT.
+     * (komunikaty bez znacznika czasu — przerwania jeszcze wyłączone) */
+    uart0_puts("MODEM: wlaczam (PD6 impuls 1.5s)...\r\n");
+    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
     _delay_ms(1500);
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+    uart0_puts("MODEM: boot ~5s...\r\n");
+    _delay_ms(5000);                         /* oryginał czeka 15 s; skrócone */
+
+    /* Rozgrzewka autobaud SIM900: kilka "AT" pozwala wykryć 9600. */
     for (uint8_t i = 0; i < 5; i++) {
         uart1_send_line("AT");
         _delay_ms(300);

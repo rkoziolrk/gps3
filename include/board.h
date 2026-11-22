@@ -27,23 +27,23 @@
 
 #define UBRR_VAL(baud) ((F_CPU / (16UL * (baud))) - 1)
 
-/* --- Linie sterujące modułami (porty/piny z init oryginału) -------------- */
-/* Zasilanie / enable. Poziomy czynne potwierdzimy przy bring-upie na sprzęcie. */
-#define GSM_PWR_PORT PORTD
-#define GSM_PWR_DDR  DDRD
-#define GSM_PWR_BIT  PD5           /* PWRKEY / zasilanie SIM900                */
+/* --- Linie sterujące modułami (z analizy init+stringów oryginału) --------- *
+ * WAŻNE: w oryginale te piny startują NISKO i są IMPULSOWANE (nie trzymane
+ * wysoko). Znaczenia z komunikatów w obrazie:
+ *   PD6 "WLACZAM MODEM"  — impuls HIGH ~1,5 s włącza modem (PWRKEY),
+ *   PD5 "RESET ZA 7 sek" — impuls HIGH ~6 s = reset modemu (recovery),
+ *   PD7 "RESET GPS"      — impuls HIGH ~10 s = reset GPS (recovery).
+ * Idle = LOW. Patrz docs/MEMORY_MAP.md. */
+#define MODEM_PORT   PORTD
+#define MODEM_DDR    DDRD
+#define MODEM_PWR_BIT PD6          /* włączenie modemu (impuls HIGH)          */
+#define MODEM_RST_BIT PD5          /* reset modemu (impuls HIGH)              */
+#define GPS_RST_BIT   PD7          /* reset GPS (impuls HIGH)                 */
 
-#define GPS_PWR_PORT PORTD
-#define GPS_PWR_DDR  DDRD
-#define GPS_PWR_BIT  PD6           /* zasilanie GPS PA6C                       */
-
-#define HWRST_PORT   PORTD
-#define HWRST_DDR    DDRD
-#define HWRST_BIT    PD7           /* linia resetu modułu                     */
-
-#define PWRLATCH_DDR DDRA          /* PA3/PA4 ustawiane na 1 w init (klucz)   */
-#define PWRLATCH_A3  PA3
-#define PWRLATCH_A4  PA4
+#define PWRLATCH_PORT PORTA        /* PA3/PA4 ustawiane na 1 w init (klucz)   */
+#define PWRLATCH_DDR  DDRA
+#define PWRLATCH_A3   PA3
+#define PWRLATCH_A4   PA4
 
 #define LED_PORT     PORTB
 #define LED_DDR      DDRB

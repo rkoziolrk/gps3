@@ -123,9 +123,13 @@ static uint8_t do_ota(void)
     char    ln[48];
     uint8_t page_buf[SPM_PAGESIZE];
 
-    /* --- bringup modemu (TODO: czasy PWRKEY/zasilania na sprzęcie) --- */
-    PIN_OUT(GSM_PWR_DDR, GSM_PWR_BIT); PIN_HIGH(GSM_PWR_PORT, GSM_PWR_BIT);
-    _delay_ms(2000);
+    /* --- bringup modemu: impuls PD6 ("WLACZAM MODEM") jak w aplikacji --- */
+    PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
+    _delay_ms(1500);
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+    _delay_ms(5000);
     if (!at_ok("ATE0", 1000)) return 0;
     if (!at_ok("AT+CIPSHUT", 2000)) { /* ignoruj */ }
     char cstt[64];
