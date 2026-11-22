@@ -55,12 +55,17 @@ krótkim przejeździe.
 | | USART1 | USART0 |
 |---|---|---|
 | RX (odbiór) | **tak** — jedyny ISR RX `@0xA3E6` (wektor 0x78), czyta `UDR1` (mem 0x009C), składa linię do bufora `0x0B39` do znaku CR | **nie** — brak odczytu `UDR0`, brak pollingu RXC0 |
-| TX (nadawanie) | tak (`sts 0x009C`) | tak (`out 0x0c`, `@0xadcc`) |
+| TX (nadawanie) | tak (`sts 0x009C`, aligned, wołane z wielu miejsc) | **brak realnego użycia** |
+
+Uwaga: USART0 jest **włączony w init** (`out 0x0a` = UCSR0B = RXEN\|TXEN,
+`@0x00ce`), ale w poprawnie zdeasemblowanym kodzie **nie ma ani odbioru, ani
+nadawania** na USART0. Jedyne odwołanie do `UDR0` (`out 0x0c`) leży w obszarze
+danych (rozjechany deasembler: `.word ????`, padding wokół `@0xadcc`), więc jest
+pozorne. **USART0 jest w praktyce nieużywany → wolny na port debug w rewrite.**
 
 **Cały odbiór idzie jedną linią (USART1)** — GPS (`$…`), modem (AT) i ramki
-modułu CAN są demultipleksowane po treści linii. **USART0 jest wyłącznie
-nadawczy** (log/debug lub odpytywanie modułu). W firmware nie ma odbioru na
-USART0, więc dane CAN docierają jako tekst na współdzielonej linii USART1, a nie
+modułu CAN są demultipleksowane po treści linii. Skoro na USART0 nie ma odbioru,
+dane z modułu CAN docierają jako tekst na **współdzielonej linii USART1**, a nie
 osobnym portem. Jest to zgodne z obserwacją, że cała komunikacja ATmegi z
 GPS/GSM jest na jednym UART.
 
