@@ -92,6 +92,14 @@ python3 tracker_server.py --port 3506 --device-host example.entrydns.org
 python3 test_client.py --port 3506 --device-host example.entrydns.org
 ```
 
+Serwer zapisuje w logu **każdy odebrany kawałek danych od razu**
+(`odebrano N B: ...`), zanim złoży z niego ramkę — więc widać także dane w złym
+formacie, obcy ruch (np. skanery portów) i połączenia, w których nic nie
+przyszło. Dane bez `\r\n` leżące w buforze dłużej niż `--partial-warn` sekund
+(domyślnie 3) dostają ostrzeżenie „niepełna ramka”, a przy rozłączeniu serwer
+podaje liczbę odebranych bajtów i ramek. Znaki sterujące z odebranych danych są
+pokazywane jako `\xNN`, żeby nie sterowały terminalem.
+
 Oba skrypty kolorują wyjście w terminalu (typy ramek, rozkodowane pozycje,
 wynik sprawdzeń). Kolory wyłącza `--no-color` albo zmienna `NO_COLOR`; przy
 przekierowaniu do pliku lub potoku wyłączają się same, a plik logu serwera

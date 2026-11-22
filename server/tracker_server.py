@@ -44,6 +44,12 @@ def paint(text, *codes):
     return "".join(codes) + text + RESET if USE_COLOR and codes else text
 
 
+def safe(text):
+    """Znaki sterujące z odebranych danych jako \\xNN — żeby nie sterowały terminalem."""
+    return "".join(c if c == "\n" or 32 <= ord(c) < 127 or ord(c) >= 160 else f"\\x{ord(c):02x}"
+                   for c in text)
+
+
 def log(msg, *codes):
     stamp = f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}]"
     first, *rest = msg.split("\n")
@@ -214,44 +220,74 @@ def handle_frame(frame, args):
     return f"NIEZNANA ramka: {frame}", "{OK}"
 
 
+async def answer(frame_raw, who, writer, args):
+    """Obsłuż jedną kompletną ramkę (zakończoną '\\n') i odeślij odpowiedź."""
+    log(f"[{who}] ramka: {frame_raw!r}", DIM)
+    frame = frame_raw.decode("latin-1").strip("\r\n\x00\x1a ")
+    if not frame:
+        log(f"[{who}] pusta linia — pomijam", YELLOW)
+        return
+    try:
+        info, reply = handle_frame(frame, args)
+    except Exception as e:                  # błąd jednej ramki nie zabija serwera
+        log(f"[{who}] błąd obsługi ramki: {e!r}", BOLD, RED)
+        info, reply = f"BŁĄD: {frame}", "{OK}"
+    log(f"[{who}] {safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]))
+    writer.write(reply.encode("latin-1"))
+    await writer.drain()
+    log(f"[{who}] odpowiedź: {reply}", GREEN)
+
+
 async def client(reader, writer, args):
     peer = writer.get_extra_info("peername")
     who = f"{peer[0]}:{peer[1]}" if peer else "?"
     log(f"Połączenie od {who}", BOLD, CYAN)
+    loop = asyncio.get_running_loop()
+    buf = b""                               # dane jeszcze bez '\n'
+    total = frames = 0
+    last_rx = loop.time()
+    warned = False
     try:
         while True:
             try:
-                raw = await asyncio.wait_for(reader.readuntil(b"\n"), args.idle_timeout)
-            except asyncio.IncompleteReadError as e:
-                if e.partial:
-                    log(f"[{who}] niepełna ramka przed rozłączeniem: {e.partial!r}", YELLOW)
-                break
-            except asyncio.LimitOverrunError:
-                raw = await reader.read(65536)
-                log(f"[{who}] za długa linia, RAW: {raw!r}", YELLOW)
-                continue
+                chunk = await asyncio.wait_for(reader.read(4096), 1.0)
             except asyncio.TimeoutError:
-                log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam", YELLOW)
+                idle = loop.time() - last_rx
+                if buf and not warned and idle >= args.partial_warn:
+                    log(f"[{who}] niepełna ramka (brak \\r\\n od {idle:.0f} s): {buf!r}", BOLD, YELLOW)
+                    warned = True
+                if idle >= args.idle_timeout:
+                    log(f"[{who}] brak danych przez {args.idle_timeout} s — zamykam", YELLOW)
+                    break
+                continue
+
+            if not chunk:                   # urządzenie zamknęło połączenie
                 break
 
-            log(f"[{who}] RAW: {raw!r}", DIM)
-            frame = raw.decode("latin-1").strip("\r\n\x00\x1a ")
-            if not frame:
-                continue
-            try:
-                info, reply = handle_frame(frame, args)
-            except Exception as e:                  # błąd jednej ramki nie zabija serwera
-                log(f"[{who}] błąd obsługi ramki: {e!r}", BOLD, RED)
-                info, reply = f"BŁĄD: {frame}", "{OK}"
-            log(f"[{who}] {info}", BOLD, FRAME_COLORS.get(info.split()[0]))
-            writer.write(reply.encode("latin-1"))
-            await writer.drain()
-            log(f"[{who}] odpowiedź: {reply}", GREEN)
+            # Każdy kawałek trafia do logu od razu — nawet jeśli to nie jest ramka.
+            total += len(chunk)
+            last_rx = loop.time()
+            warned = False
+            log(f"[{who}] odebrano {len(chunk)} B: {chunk!r}", DIM)
+
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                frames += 1
+                await answer(line + b"\n", who, writer, args)
+            if len(buf) > 65536:
+                log(f"[{who}] ponad 64 KiB bez \\r\\n — odrzucam bufor: {buf[:200]!r}...", BOLD, RED)
+                buf = b""
     except (ConnectionResetError, BrokenPipeError) as e:
         log(f"[{who}] połączenie zerwane: {e!r}", RED)
     finally:
         writer.close()
-        log(f"Rozłączono {who}", CYAN)
+        if buf:
+            log(f"[{who}] niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW)
+        if total == 0:
+            log(f"Rozłączono {who} — nie przyszedł ani jeden bajt", BOLD, YELLOW)
+        else:
+            log(f"Rozłączono {who} — odebrano {total} B, ramek: {frames}", CYAN)
 
 
 async def main():
@@ -266,7 +302,10 @@ async def main():
     ap.add_argument("--roaming-mode", type=int, default=3, choices=range(8))
     ap.add_argument("--session-interval", type=int, default=60)
     ap.add_argument("--config-interval", type=int, default=3600)
-    ap.add_argument("--idle-timeout", type=int, default=600)
+    ap.add_argument("--idle-timeout", type=int, default=600,
+                    help="zamknij połączenie po tylu sekundach ciszy")
+    ap.add_argument("--partial-warn", type=int, default=3,
+                    help="ostrzeż, gdy dane bez \\r\\n czekają w buforze tyle sekund")
     ap.add_argument("--log-file", default="tracker_server.log")
     ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
     args = ap.parse_args()
