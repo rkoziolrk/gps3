@@ -137,6 +137,7 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
      * Gdy baud już stały — modem startuje w 9600 i wystawia RDY, więc ani
      * rozgrzewka, ani ustawianie nie są potrzebne (pomijamy całą gałąź). */
     if (eeprom_read_byte((uint8_t *)IPR_DONE_ADDR) != IPR_DONE_MAGIC) {
+        uart0_puts("MODEM: rozgrzewka autobaud (5x AT)...\r\n");
         for (uint8_t i = 0; i < 5; i++) { uart1_send_line("AT"); _delay_ms(300); }
         uart0_puts("MODEM: ustawiam staly baud 9600 (raz)...\r\n");
         uart1_send_line("AT+IPR=9600");
