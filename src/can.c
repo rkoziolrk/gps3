@@ -17,23 +17,24 @@ void can_init(void)
     last_raw[0] = '\0';
 }
 
-/* Heurystyka: odpowiedzi modemu SIM900 pomijamy; resztę traktujemy jako
- * kandydata na ramkę CAN. Do zawężenia, gdy poznamy realny format. */
-static uint8_t looks_like_modem(const char *s)
+/* Akceptujemy tylko linie wyglądające jak ramka modułu CAN:
+ *   - zawierają '!' (separator sekcji CAN1!CAN2), albo
+ *   - zaczynają się "+9<cyfra>" (sekcja CAN2, np. "+9902900000").
+ * To odrzuca IP (10.x), urwane fragmenty GPS (0.00,K,N*32) i URC-i modemu
+ * (+CREG, +CMGR, +IPD...), które zaczynają się "+<litera>". */
+static uint8_t looks_like_can(const char *s)
 {
-    static const char *const pref[] = {
-        "AT", "OK", "ERROR", "+", ">", "CONNECT", "CLOSED", "SEND", "RING",
-        "NO CARRIER", "CME", "CMS", NULL
-    };
-    for (uint8_t i = 0; pref[i]; i++)
-        if (!strncmp(s, pref[i], strlen(pref[i])))
+    if (s[0] == '+' && s[1] == '9')
+        return 1;
+    for (const char *p = s; *p; p++)
+        if (*p == '!')
             return 1;
     return 0;
 }
 
 uint8_t can_feed(const char *line)
 {
-    if (!line[0] || looks_like_modem(line))
+    if (!looks_like_can(line))
         return 0;
     strncpy(last_raw, line, sizeof(last_raw) - 1);
     last_raw[sizeof(last_raw) - 1] = '\0';
