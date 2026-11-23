@@ -151,18 +151,17 @@ static uint8_t do_ota(void)
     PORTA |=  (1 << PA4);
 
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
+    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);    /* PWRKEY puszczony (idle) — wewn. pullup */
 
-    /* Modem może już działać (restart z aplikacji). Impuls PD6 na WŁĄCZONYM
-     * SIM900 WYŁĄCZYŁBY go — dlatego najpierw próbujemy AT; pulsujemy tylko
-     * gdy modem milczy. */
+    /* Sonda RAZ: AT -> OK? Jeśli nie ma odpowiedzi, zakładamy że wyłączony.
+     * (Impuls na włączonym SIM900 by go wyłączył.) */
     u0_puts("BOOT: modem?\r\n");
-    uint8_t alive = 0;
-    for (uint8_t k = 0; k < 3 && !alive; k++) if (at_ok("AT", 600)) alive = 1;
-    if (!alive) {
-        u0_puts("BOOT: wlaczam modem (PD6)\r\n");
-        PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(2000);                /* PWRKEY w dół >=1 s */
+    if (!at_ok("AT", 1500)) {
+        /* Wyłączony -> włącz: PWRKEY ściągnięty w DÓŁ 1200 ms, potem puszczony. */
+        u0_puts("BOOT: wlaczam (PWRKEY w dol 1200ms)\r\n");
         PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(1200);
+        PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
         if (wait_token("RDY", 5000)) u0_puts("BOOT: RDY\r\n");
         else                         u0_puts("BOOT: brak RDY (ide dalej)\r\n");
         for (uint8_t i = 0; i < 3; i++) { u1_line("AT"); _delay_ms(300); }
