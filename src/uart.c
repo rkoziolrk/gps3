@@ -48,12 +48,16 @@ void uart1_send_line(const char *s)
     uart1_putc('\r');
 }
 
-/* Odbiór liniowy. */
+/* Odbiór liniowy z buforem PIERŚCIENIOWYM — żeby serie linii (np. nagłówek+
+ * treść+OK przy AT+CMGR, albo paczka zdań NMEA) nie gubiły się, gdy pętla
+ * główna akurat coś wypisuje na debug. RX_LINES slotów = RX_LINES-1 linii. */
+#define RX_LINES 8
 static volatile char    rx_buf[UART_LINE_MAX];
 static volatile uint8_t rx_len;
-static volatile char    ready_buf[UART_LINE_MAX];
-static volatile uint8_t ready_len;
-static volatile uint8_t ready_flag;
+static volatile char    ring[RX_LINES][UART_LINE_MAX];
+static volatile uint8_t ring_len[RX_LINES];
+static volatile uint8_t ring_head;        /* ISR pisze tutaj           */
+static volatile uint8_t ring_tail;        /* pętla czyta stąd          */
 static volatile uint8_t prompt_flag;      /* '>' od AT+CIPSEND (bez CR) */
 
 ISR(USART1_RX_vect)
@@ -70,14 +74,18 @@ ISR(USART1_RX_vect)
         prompt_flag = 1;
 
     if (c == '\r') {
-        /* Koniec linii: oddaj do bufora wymiany (pomiń puste). */
+        /* Koniec linii: wstaw do pierścienia (pomiń puste). */
         if (rx_len > 0) {
-            uint8_t i;
-            for (i = 0; i < rx_len; i++)
-                ready_buf[i] = rx_buf[i];
-            ready_buf[rx_len] = '\0';
-            ready_len  = rx_len;
-            ready_flag = 1;
+            uint8_t nh = (uint8_t)((ring_head + 1) % RX_LINES);
+            if (nh != ring_tail) {          /* jest wolny slot */
+                uint8_t i;
+                for (i = 0; i < rx_len; i++)
+                    ring[ring_head][i] = rx_buf[i];
+                ring[ring_head][rx_len] = '\0';
+                ring_len[ring_head] = rx_len;
+                ring_head = nh;
+            }
+            /* pierścień pełny -> ta linia przepada (rzadkie) */
             rx_len = 0;
         }
     } else if (c == '\n') {
@@ -103,18 +111,18 @@ int uart1_get_line(char *dst, uint8_t dstsize)
 {
     uint8_t len;
 
-    if (!ready_flag)
+    if (ring_head == ring_tail)             /* pierścień pusty */
         return -1;
 
-    /* Sekcja krytyczna: kopiowanie z bufora współdzielonego z ISR. */
+    /* Sekcja krytyczna: odczyt slotu współdzielonego z ISR. */
     cli();
-    len = ready_len;
+    len = ring_len[ring_tail];
     if (len > (dstsize - 1))
         len = dstsize - 1;
     for (uint8_t i = 0; i < len; i++)
-        dst[i] = ready_buf[i];
-    dst[len]   = '\0';
-    ready_flag = 0;
+        dst[i] = ring[ring_tail][i];
+    dst[len]  = '\0';
+    ring_tail = (uint8_t)((ring_tail + 1) % RX_LINES);
     sei();
 
     return (int)len;
@@ -135,5 +143,5 @@ void uart_init(void)
     UCSR1B = (1 << RXEN1) | (1 << TXEN1) | (1 << RXCIE1);
     UCSR1C = (1 << UCSZ11) | (1 << UCSZ10);   /* 8N1 */
 
-    rx_len = ready_len = ready_flag = 0;
+    rx_len = ring_head = ring_tail = 0;
 }
