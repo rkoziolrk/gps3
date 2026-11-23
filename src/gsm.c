@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "roam.h"
 #include <avr/io.h>
+#include <avr/eeprom.h>
 #include <util/delay.h>
 #include <string.h>
 #include <stdio.h>
@@ -21,6 +22,12 @@
 enum { G_OFF, G_SEQ, G_ONLINE, G_SEND_PROMPT, G_SEND_DATA, G_SMS_READ, G_SMS_DEL };
 
 #define SMS_POLL_PERIOD 60       /* [s] jak często czytać SMS gdy online */
+
+/* Jednorazowe utrwalenie stałego baudu 9600 w modemie (AT+IPR=9600; AT&W),
+ * żeby SIM900 zawsze startował w 9600 i wystawiał RDY. Flaga w EEPROM pod
+ * stałym adresem (poniżej bloku OTA, z dala od konfiguracji). */
+#define IPR_DONE_ADDR  0x07BE
+#define IPR_DONE_MAGIC 0x9C
 
 static cfg_t        cfg;
 static void       (*sms_handler)(const char *);
@@ -130,6 +137,22 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     for (uint8_t i = 0; i < 5; i++) {
         uart1_send_line("AT");
         _delay_ms(300);
+    }
+
+    /* Raz na zawsze: utrwal stały baud 9600 (AT+IPR=9600; AT&W). Dzięki temu
+     * moduł zawsze startuje w 9600 i wystawia RDY. Flaga -> nie powtarzamy
+     * (oszczędność NVRAM modemu). */
+    if (eeprom_read_byte((uint8_t *)IPR_DONE_ADDR) != IPR_DONE_MAGIC) {
+        uart0_puts("MODEM: ustawiam staly baud 9600 (raz)...\r\n");
+        uart1_send_line("AT+IPR=9600");
+        poll_find("OK", 2000);
+        uart1_send_line("AT&W");
+        if (poll_find("OK", 3000)) {
+            eeprom_update_byte((uint8_t *)IPR_DONE_ADDR, IPR_DONE_MAGIC);
+            uart0_puts("MODEM: baud 9600 zapisany na stale\r\n");
+        } else {
+            uart0_puts("MODEM: AT&W bez OK - sprobuje przy nastepnym starcie\r\n");
+        }
     }
 
     state = G_SEQ;
