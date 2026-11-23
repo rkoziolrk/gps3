@@ -54,6 +54,25 @@ static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
 const char *gsm_imei(void)   { return imei; }
 uint8_t     gsm_online(void) { return state >= G_ONLINE; }   /* ONLINE i stany pochodne */
 
+/* Polling RX (przerwania w gsm_init jeszcze wyłączone): szuka podciągu tok
+ * w strumieniu przez ms milisekund. Zwraca 1 gdy znaleziony (odporne na szum —
+ * wymaga dokładnej sekwencji znaków, np. "OK" albo "RDY"). */
+static uint8_t poll_find(const char *tok, uint16_t ms)
+{
+    uint8_t i = 0;
+    for (uint16_t t = 0; t < ms; t++) {
+        uint8_t got = 0;
+        while (UCSR1A & (1 << RXC1)) {
+            char c = (char)UDR1;
+            got = 1;
+            if (c == tok[i]) { if (tok[++i] == 0) return 1; }
+            else            { i = (c == tok[0]) ? 1 : 0; }
+        }
+        if (!got) _delay_ms(1);
+    }
+    return 0;
+}
+
 /* Przełącznik źródła współdzielonej linii UART (PA3). W oryginale konteksty
  * modemu ustawiają PA3=0, a GPS jest słyszalny przy PA3=1 (PA4 pozostaje 1).
  *   modem=1 -> PA3=0 (wycisz GPS, słuchaj modemu)
@@ -89,16 +108,23 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
 
     gsm_route(1);                            /* słuchaj modemu (wycisz GPS)   */
 
-    /* Włączenie SIM900 — bezwarunkowo, sprawdzona sekwencja PWRKEY:
-     * PD6 LOW 1 s, HIGH 2 s (impuls włącza moduł), LOW, 3 s na rozruch.
-     * (Logika "nie wyłączaj już działającego modemu" jest w bootloaderze.) */
-    uart0_puts("MODEM: wlaczam (PD6)...\r\n");
-    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-    _delay_ms(1000);
-    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
-    _delay_ms(2000);
-    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-    _delay_ms(3000);
+    /* 1. Czy modem już działa? AT -> OK. Jeśli tak — NIE pulsujemy (impuls na
+     *    działającym SIM900 by go wyłączył). Test szuka realnego "OK". */
+    uart0_puts("MODEM: AT?\r\n");
+    uart1_send_line("AT");
+    if (poll_find("OK", 1500)) {
+        uart0_puts("MODEM: juz dziala\r\n");
+    } else {
+        /* 2. Włącz impulsem PWRKEY (PD6 HIGH >=1 s) i czekaj na RDY (stały baud
+         *    -> SIM900 wystawia RDY po starcie; datasheet 4.2.1). */
+        uart0_puts("MODEM: wlaczam (PD6)...\r\n");
+        PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(2000);
+        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+        if (poll_find("RDY", 12000)) uart0_puts("MODEM: RDY\r\n");
+        else                         uart0_puts("MODEM: brak RDY (ide dalej)\r\n");
+        _delay_ms(500);
+    }
 
     /* Rozgrzewka autobaud SIM900: kilka "AT" pozwala wykryć 9600. */
     for (uint8_t i = 0; i < 5; i++) {

@@ -160,13 +160,12 @@ static uint8_t do_ota(void)
     for (uint8_t k = 0; k < 3 && !alive; k++) if (at_ok("AT", 600)) alive = 1;
     if (!alive) {
         u0_puts("BOOT: wlaczam modem (PD6)\r\n");
-        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(1000);
         PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(2000);
+        _delay_ms(2000);                /* PWRKEY w dół >=1 s */
         PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(3000);
-        for (uint8_t i = 0; i < 5; i++) { u1_line("AT"); _delay_ms(300); }
+        if (wait_token("RDY", 5000)) u0_puts("BOOT: RDY\r\n");
+        else                         u0_puts("BOOT: brak RDY (ide dalej)\r\n");
+        for (uint8_t i = 0; i < 3; i++) { u1_line("AT"); _delay_ms(300); }
     }
     if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
 
