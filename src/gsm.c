@@ -55,8 +55,9 @@ static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
 #define STEP_CMGR       3
 #define STEP_CMGD       4
 #define STEP_COPS       6
-#define STEP_CIFSR     10
-#define STEP_LAST      12
+#define STEP_CIPSHUT    8
+#define STEP_CIFSR     11
+#define STEP_LAST      13
 
 const char *gsm_imei(void)   { return imei; }
 uint8_t     gsm_online(void) { return state >= G_ONLINE; }   /* ONLINE i stany pochodne */
@@ -168,11 +169,12 @@ static const char *step_cmd(uint8_t s, char *out, uint8_t osz)
     case 5:  return "AT+CREG=2";
     case 6:  return roam_cops_cmd(cfg.roam_mode, "");
     case 7:  return "AT+CGATT=1";
-    case 8:  snprintf(out, osz, "AT+CSTT=\"%s\",\"\",\"\"", APN_DEFAULT); return out;
-    case 9:  return "AT+CIICR";
-    case 10: return "AT+CIFSR";
-    case 11: return "AT+CIPHEAD=1";
-    case 12: snprintf(out, osz, "AT+CIPSTART=\"TCP\",\"%s\",%u", cfg.host, cfg.port); return out;
+    case 8:  return "AT+CIPSHUT";             /* reset stosu IP (czysty CSTT)   */
+    case 9:  snprintf(out, osz, "AT+CSTT=\"%s\",\"\",\"\"", APN_DEFAULT); return out;
+    case 10: return "AT+CIICR";
+    case 11: return "AT+CIFSR";
+    case 12: return "AT+CIPHEAD=1";
+    case 13: snprintf(out, osz, "AT+CIPSTART=\"TCP\",\"%s\",%u", cfg.host, cfg.port); return out;
     default: return NULL;
     }
 }
@@ -201,6 +203,7 @@ void gsm_feed(const char *line)
     if (in_cifsr && line[0] >= '0' && line[0] <= '9') f_ok = 1;
 
     if (!strncmp(line, "OK", 2))              f_ok = 1;
+    if (!strncmp(line, "SHUT OK", 7))         f_ok = 1;   /* AT+CIPSHUT */
     if (!strncmp(line, "ERROR", 5))           f_err = 1;
     if (!strncmp(line, "CONNECT OK", 10))     f_connect = 1;
     if (!strncmp(line, "ALREADY CONNECT", 15))f_connect = 1;
@@ -240,7 +243,7 @@ void gsm_tick(uint32_t now)
 
         /* CMGD (pusta pozycja) i COPS (gdy już zarejestrowany) mogą dać ERROR
          * — traktujemy to jak sukces i idziemy dalej. */
-        if (f_ok || ((step == STEP_CMGD || step == STEP_COPS) && f_err)) {
+        if (f_ok || ((step == STEP_CMGD || step == STEP_COPS || step == STEP_CIPSHUT) && f_err)) {
             if (step == STEP_CMGD) {
                 in_cmgr = 0;
                 if (sms_have && sms_handler) {
@@ -264,7 +267,7 @@ void gsm_tick(uint32_t now)
         break;
 
     case G_ONLINE:
-        if (f_closed) { f_closed = 0; dbg_line("GSM", "TCP CLOSED -> reconnect"); state = G_SEQ; step = STEP_LAST; step_t0 = 0; return; }
+        if (f_closed) { f_closed = 0; dbg_line("GSM", "TCP CLOSED -> reconnect"); state = G_SEQ; step = STEP_CIPSHUT; step_t0 = 0; return; }
         if (has_pending) {
             gsm_route(1);               /* wysyłka -> słuchaj modemu */
             uart1_got_prompt();         /* skasuj ewentualny stary '>' */
@@ -321,7 +324,7 @@ void gsm_tick(uint32_t now)
 
     case G_SEND_DATA:
         if (f_sendok) { has_pending = 0; state = G_ONLINE; }
-        else if (f_closed) { f_closed = 0; has_pending = 0; state = G_SEQ; step = STEP_LAST; step_t0 = 0; }
+        else if (f_closed) { f_closed = 0; has_pending = 0; state = G_SEQ; step = STEP_CIPSHUT; step_t0 = 0; }
         else if ((now - step_t0) >= STEP_TIMEOUT) { has_pending = 0; state = G_ONLINE; }
         break;
 
