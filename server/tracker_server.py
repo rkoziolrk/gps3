@@ -401,15 +401,22 @@ async def answer(frame_raw, who, writer, args):
         info, reply = f"BŁĄD: {frame}", "{OK}"
     log(f"[{who}] {RX}{safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]), level=0)
 
-    # OTA: obraz firmware wysyłamy porcjami poniżej tempa 9600 bodów (~960 B/s),
-    # żeby nie przepełnić bufora TCP modemu (inaczej bootloader gubi bajty -> CRC).
+    # OTA: nagłówek osobno, potem firmware w kawałkach RÓWNYCH stronie flasha
+    # (256 B) z przerwą na SPM. Bootloader zapisuje stronę (SPM ~9 ms blokuje
+    # CPU i gubiłby bajty), więc nadajemy chunk = 1 strona, a w przerwie modem
+    # nic nie sypie -> zapis wypada w ciszy, zero gubienia bajtów.
     if frame.startswith("FWREQ") and reply.startswith("FW "):
-        data = reply.encode("latin-1")
-        for i in range(0, len(data), 256):
-            writer.write(data[i:i + 256])
+        nl = reply.index("\n") + 1
+        header = reply[:nl].encode("latin-1")       # "FW <size> <crc>\n"
+        fw = reply[nl:].encode("latin-1")           # surowy obraz
+        writer.write(header)
+        await writer.drain()
+        await asyncio.sleep(0.45)
+        for i in range(0, len(fw), 256):            # 256 = SPM_PAGESIZE
+            writer.write(fw[i:i + 256])
             await writer.drain()
-            await asyncio.sleep(0.30)       # 256 B / 0,30 s = ~850 B/s < 960 B/s
-        log(f"[{who}] {TX}OTA: wysłano {len(data)} B porcjami", BOLD, GREEN, level=0)
+            await asyncio.sleep(0.45)               # czas na odbiór strony + SPM
+        log(f"[{who}] {TX}OTA: wysłano {len(fw)} B (strony 256 B + przerwa)", BOLD, GREEN, level=0)
         return
 
     writer.write(reply.encode("latin-1"))
