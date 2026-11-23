@@ -164,6 +164,7 @@ static uint8_t do_ota(void)
         PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
         if (wait_token("RDY", 5000)) u0_puts("BOOT: RDY\r\n");
         else                         u0_puts("BOOT: brak RDY (ide dalej)\r\n");
+        u0_puts("BOOT: rozgrzewka (3x AT)...\r\n");
         for (uint8_t i = 0; i < 3; i++) { u1_line("AT"); _delay_ms(300); }
     }
     if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
