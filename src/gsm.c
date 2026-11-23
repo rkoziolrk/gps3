@@ -104,7 +104,7 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
     PIN_OUT(MODEM_DDR, MODEM_RST_BIT);
     PIN_OUT(MODEM_DDR, GPS_RST_BIT);
-    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);     /* PWRKEY puszczony (idle) — wewn. pullup */
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);      /* idle LOW (jak oryginał); impuls HIGH włącza */
     PIN_LOW(MODEM_PORT, MODEM_RST_BIT);
     PIN_LOW(MODEM_PORT, GPS_RST_BIT);
     PIN_OUT(LED_DDR, LED_BIT);
@@ -122,12 +122,12 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     if (poll_find("OK", 1500)) {
         uart0_puts("MODEM: juz dziala\r\n");
     } else {
-        /* 2. Wyłączony -> włącz: PWRKEY (wewn. pullup) ściągnięty w DÓŁ 1200 ms,
-         *    potem puszczony; czekaj na RDY (stały baud, datasheet 4.2.1). */
-        uart0_puts("MODEM: wlaczam (PWRKEY w dol 1200ms)...\r\n");
-        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(1200);
+        /* 2. Wyłączony -> włącz: PD6 HIGH 1200 ms (przez tranzystor ściąga PWRKEY
+         *    w dół), potem LOW; czekaj na RDY (stały baud, datasheet 4.2.1). */
+        uart0_puts("MODEM: wlaczam (PD6 HIGH 1200ms)...\r\n");
         PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(1200);
+        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
         if (poll_find("RDY", 12000)) uart0_puts("MODEM: RDY\r\n");
         else                         uart0_puts("MODEM: brak RDY (ide dalej)\r\n");
     }

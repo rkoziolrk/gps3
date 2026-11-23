@@ -151,17 +151,17 @@ static uint8_t do_ota(void)
     PORTA |=  (1 << PA4);
 
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
-    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);    /* PWRKEY puszczony (idle) — wewn. pullup */
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);     /* idle LOW (jak oryginał) */
 
     /* Sonda RAZ: AT -> OK? Jeśli nie ma odpowiedzi, zakładamy że wyłączony.
      * (Impuls na włączonym SIM900 by go wyłączył.) */
     u0_puts("BOOT: modem?\r\n");
     if (!at_ok("AT", 1500)) {
-        /* Wyłączony -> włącz: PWRKEY ściągnięty w DÓŁ 1200 ms, potem puszczony. */
-        u0_puts("BOOT: wlaczam (PWRKEY w dol 1200ms)\r\n");
-        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(1200);
+        /* Wyłączony -> włącz: PD6 HIGH 1200 ms (tranzystor ściąga PWRKEY w dół). */
+        u0_puts("BOOT: wlaczam (PD6 HIGH 1200ms)\r\n");
         PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(1200);
+        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
         if (wait_token("RDY", 5000)) u0_puts("BOOT: RDY\r\n");
         else                         u0_puts("BOOT: brak RDY (ide dalej)\r\n");
         for (uint8_t i = 0; i < 3; i++) { u1_line("AT"); _delay_ms(300); }
