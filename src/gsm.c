@@ -54,27 +54,6 @@ static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
 const char *gsm_imei(void)   { return imei; }
 uint8_t     gsm_online(void) { return state >= G_ONLINE; }   /* ONLINE i stany pochodne */
 
-/* Sonda modemu (przerwania jeszcze wyłączone w gsm_init -> polling RXC1).
- * Wysyła AT i czeka ~700 ms na jakikolwiek bajt odpowiedzi. */
-static uint8_t modem_alive_poll(void)
-{
-    uint8_t prev = 0;
-    while (UCSR1A & (1 << RXC1)) (void)UDR1;      /* opróżnij bufor */
-    uart1_send_line("AT");
-    /* Szukamy REALNEGO "OK" — sam bajt to za mało (szum na linii gdy modem
-     * wyłączony dawałby fałszywe trafienie i pominięcie impulsu PD6). */
-    for (uint16_t t = 0; t < 900; t++) {
-        if (UCSR1A & (1 << RXC1)) {
-            char c = (char)UDR1;
-            if (prev == 'O' && c == 'K') return 1;
-            prev = (uint8_t)c;
-        } else {
-            _delay_ms(1);
-        }
-    }
-    return 0;
-}
-
 /* Przełącznik źródła współdzielonej linii UART (PA3). W oryginale konteksty
  * modemu ustawiają PA3=0, a GPS jest słyszalny przy PA3=1 (PA4 pozostaje 1).
  *   modem=1 -> PA3=0 (wycisz GPS, słuchaj modemu)
@@ -110,22 +89,16 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
 
     gsm_route(1);                            /* słuchaj modemu (wycisz GPS)   */
 
-    /* Modem może już działać (restart z aplikacji/OTA). Impuls PD6 na WŁĄCZONYM
-     * SIM900 WYŁĄCZYŁBY go — dlatego najpierw sondujemy AT; pulsujemy PD6 tylko
-     * gdy modem milczy. (komunikaty bez znacznika czasu — przerwania off) */
-    uint8_t alive = 0;
-    for (uint8_t k = 0; k < 3 && !alive; k++)
-        alive = modem_alive_poll();
-    if (!alive) {
-        uart0_puts("MODEM: wlaczam (PD6 impuls)...\r\n");
-        PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(1500);
-        PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-        uart0_puts("MODEM: boot ~5s...\r\n");
-        _delay_ms(5000);
-    } else {
-        uart0_puts("MODEM: juz dziala\r\n");
-    }
+    /* Włączenie SIM900 — bezwarunkowo, sprawdzona sekwencja PWRKEY:
+     * PD6 LOW 1 s, HIGH 2 s (impuls włącza moduł), LOW, 3 s na rozruch.
+     * (Logika "nie wyłączaj już działającego modemu" jest w bootloaderze.) */
+    uart0_puts("MODEM: wlaczam (PD6)...\r\n");
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+    _delay_ms(1000);
+    PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
+    _delay_ms(2000);
+    PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+    _delay_ms(3000);
 
     /* Rozgrzewka autobaud SIM900: kilka "AT" pozwala wykryć 9600. */
     for (uint8_t i = 0; i < 5; i++) {

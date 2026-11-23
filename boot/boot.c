@@ -161,10 +161,11 @@ static uint8_t do_ota(void)
     if (!alive) {
         u0_puts("BOOT: wlaczam modem (PD6)\r\n");
         PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
+        _delay_ms(1000);
         PIN_HIGH(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(1500);
+        _delay_ms(2000);
         PIN_LOW(MODEM_PORT, MODEM_PWR_BIT);
-        _delay_ms(5000);
+        _delay_ms(3000);
         for (uint8_t i = 0; i < 5; i++) { u1_line("AT"); _delay_ms(300); }
     }
     if (!at_ok("ATE0", 1000)) { u0_puts("BOOT: brak modemu\r\n"); return 0; }
