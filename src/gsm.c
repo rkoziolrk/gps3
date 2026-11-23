@@ -132,16 +132,12 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
         else                         uart0_puts("MODEM: brak RDY (ide dalej)\r\n");
     }
 
-    /* Rozgrzewka autobaud SIM900: kilka "AT" pozwala wykryć 9600. */
-    for (uint8_t i = 0; i < 5; i++) {
-        uart1_send_line("AT");
-        _delay_ms(300);
-    }
-
-    /* Raz na zawsze: utrwal stały baud 9600 (AT+IPR=9600; AT&W). Dzięki temu
-     * moduł zawsze startuje w 9600 i wystawia RDY. Flaga -> nie powtarzamy
-     * (oszczędność NVRAM modemu). */
+    /* Dopóki baud nie jest utrwalony, modem jest w autobaud: rozgrzewka "AT"
+     * pozwala mu wykryć 9600, a potem utrwalamy stały baud (AT+IPR + AT&W).
+     * Gdy baud już stały — modem startuje w 9600 i wystawia RDY, więc ani
+     * rozgrzewka, ani ustawianie nie są potrzebne (pomijamy całą gałąź). */
     if (eeprom_read_byte((uint8_t *)IPR_DONE_ADDR) != IPR_DONE_MAGIC) {
+        for (uint8_t i = 0; i < 5; i++) { uart1_send_line("AT"); _delay_ms(300); }
         uart0_puts("MODEM: ustawiam staly baud 9600 (raz)...\r\n");
         uart1_send_line("AT+IPR=9600");
         poll_find("OK", 2000);
