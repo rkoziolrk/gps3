@@ -328,18 +328,23 @@ int main(void)
         u0_puts("\r\nBOOT: OTA start\r\n");
         u1_init();
         uint8_t safe_fail = 0;
+        uint8_t ever_dirty = 0;              /* czy flash aplikacji był tknięty */
         for (;;) {
             uint8_t r = do_ota();
             if (r == 1)                      /* sukces (flaga skasowana w do_ota) */
                 break;
-            if (r == 0) {                    /* nie zaczęliśmy flashować -> aplikacja cała */
+            if (r == 2)                      /* flash naruszony -> aplikacja uszkodzona */
+                ever_dirty = 1;
+            /* Oddajemy sterowanie starej aplikacji TYLKO gdy flash NIGDY nie był
+             * tknięty (czyste niepowodzenia połączenia). Jeśli cokolwiek już
+             * zapisaliśmy -> aplikacja uszkodzona, NIE skaczemy, ponawiamy aż do
+             * udanego OTA (odzysk ostatecznie przez VVDI/ISP). */
+            if (r == 0 && !ever_dirty) {
                 if (++safe_fail >= 5) {
                     eeprom_update_byte((uint8_t *)OTA_FLAG_ADDR, 0xFF);
-                    break;                   /* uruchom starą, nienaruszoną aplikację */
+                    break;
                 }
             }
-            /* r == 2: flash częściowo nadpisany -> NIE skacz do aplikacji,
-             * ponawiaj aż do udanego OTA (ostateczny odzysk przez ISP). */
             _delay_ms(8000);
         }
     }
