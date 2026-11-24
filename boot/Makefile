@@ -18,8 +18,8 @@ PROGRAMMER ?= usbasp
 PORT       ?= usb
 
 CFLAGS := -mmcu=$(MCU) -DF_CPU=$(F_CPU) -Os -Wall -Wextra -std=gnu99 \
-          -ffunction-sections -fdata-sections
-LDFLAGS := -mmcu=$(MCU) -Wl,--gc-sections \
+          -ffunction-sections -fdata-sections -mcall-prologues -mrelax
+LDFLAGS := -mmcu=$(MCU) -Wl,--gc-sections -Wl,--relax \
            -Wl,--section-start=.text=$(BOOT_START)
 
 .PHONY: all fuse flash clean

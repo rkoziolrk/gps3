@@ -76,16 +76,27 @@ Po TCP, tekstowo w nagłówku, potem surowe bajty:
   skok do aplikacji. Niezgodność → `FWERR`, ponów przy następnym starcie.
 - Serwer serwuje `build/tracker.bin` (patrz serwer: `--fw <plik>`).
 
-> **Odbiór UART w przerwaniu (ważne dla niezawodności).** SPM blokuje CPU na
-> ~9 ms; przy 9600 bps w tym czasie wpada ~9 bajtów, a sprzętowy bufor USART ma
-> tylko 2 bajty. Gdyby bootloader odbierał danymi pollingiem, podczas zapisu
-> każdej strony gubiłby bajty → CRC FAIL i wieczne ponawianie (objaw: log urywa
-> się na `flashuje...` i wraca do `modem?`). Dlatego odbiór idzie przez ISR
-> `USART1_RX_vect` z buforem pierścieniowym; ISR leży w sekcji BOOT (NRWW), więc
-> działa także w trakcie programowania sekcji aplikacji (RWW) i nic nie ginie.
-> Bootloader ustawia na czas OTA `IVSEL=1` (wektory w BOOT); `jump_to_app()`
-> przywraca `IVSEL=0`. Pacing serwera (strony 256 B + przerwa) nadal pomaga, ale
-> to ISR jest tu gwarantem — bez niej wyrównanie faz zależy od buforowania SIM900.
+> **Kontrola przepływu: tryb ręczny modemu (AT+CIPRXGET) — pull, nie push.**
+> SPM blokuje CPU na ~9 ms; przy 9600 bps w tym czasie wpada ~9 bajtów, a
+> sprzętowy bufor USART ma tylko 2 bajty. W trybie push (`+IPD`) modem sypie
+> dane kiedy chce, więc podczas zapisu strony bootloader gubiłby bajty → CRC
+> FAIL i wieczne ponawianie (objaw: log urywa się na `hdr ok, flash` / dawniej
+> `flashuje...` i wraca do `modem?`).
+>
+> Dlatego bootloader ustawia `AT+CIPRXGET=1` (odbiór RĘCZNY): modem **nie sypie
+> sam**, tylko trzyma dane w swoim buforze, a host pobiera na żądanie:
+> ```
+> AT+CIPRXGET=2,256  ->  "+CIPRXGET: 2,<len>,<rest>" + <len> bajtów + OK
+> ```
+> Host czyta dokładnie `<len>` bajtów (surowo), zapisuje stronę przez SPM, i
+> dopiero wtedy prosi o kolejną porcję. Podczas SPM **nic nie przychodzi** (modem
+> czeka), więc polling UART wystarcza — bez ISR i bez tablicy wektorów w sekcji
+> BOOT (oszczędność miejsca; bootloader musi zmieścić się w 2048 słowach).
+>
+> Przepływ dławi samo TCP: gdy bufor modemu (kilka KB) się zapełni, okno się
+> domyka i serwer czeka — obraz dowolnej wielkości przepływa przez mały bufor
+> bez strat. **Serwer wysyła cały obraz jednym ciągiem, bez pacingu i dzielenia
+> na strony.** CRC32 i tak weryfikuje całość (bezpiecznik na buraki SIM900).
 
 ## Rdzeń bootloadera (`boot/boot.c`)
 

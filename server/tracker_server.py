@@ -452,17 +452,14 @@ async def answer(frame_raw, who, writer, args, state, conn):
     # CPU i gubiłby bajty), więc nadajemy chunk = 1 strona, a w przerwie modem
     # nic nie sypie -> zapis wypada w ciszy, zero gubienia bajtów.
     if frame.startswith("FWREQ") and reply.startswith("FW "):
-        nl = reply.index("\n") + 1
-        header = reply[:nl].encode("latin-1")       # "FW <size> <crc>\n"
-        fw = reply[nl:].encode("latin-1")           # surowy obraz
-        writer.write(header)
+        # Bootloader pobiera dane w trybie RĘCZNYM (AT+CIPRXGET) i sam dyktuje
+        # tempo — wrzucamy cały obraz do gniazda jednym ciągiem. Kontrolę
+        # przepływu robi TCP: gdy bufor modemu się zapełni, okno się domyka i
+        # writer.drain() poczeka, aż bootloader dociągnie kolejną porcję.
+        # Żadnego pacingu ani dzielenia na strony po stronie serwera.
+        writer.write(reply.encode("latin-1"))
         await writer.drain()
-        await asyncio.sleep(0.45)
-        for i in range(0, len(fw), 256):            # 256 = SPM_PAGESIZE
-            writer.write(fw[i:i + 256])
-            await writer.drain()
-            await asyncio.sleep(0.45)               # czas na odbiór strony + SPM
-        log(f"[{who}] {TX}OTA: wysłano {len(fw)} B (strony 256 B + przerwa)", BOLD, GREEN, level=0)
+        log(f"[{who}] {TX}OTA: wysłano {len(reply)} B (nagłówek + obraz, pull/CIPRXGET)", BOLD, GREEN, level=0)
         return
 
     writer.write(reply.encode("latin-1"))
