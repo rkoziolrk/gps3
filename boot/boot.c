@@ -29,17 +29,39 @@
 #define META_SIZE_ADDR 0x07F4
 #define META_CRC_ADDR  0x07F8
 
-/* ---------------- UART1 (linia modemu, surowo, polling) ------------------- *
- * Odbiór pollingiem WYSTARCZA, bo obraz pobieramy w trybie ręcznym modemu
- * (AT+CIPRXGET): podczas SPM nie przychodzą żadne dane (modem sam nic nie
- * sypie), więc nie ma overrunu 2-bajtowego FIFO. Dzięki temu nie potrzeba ISR
- * ani tablicy wektorów w sekcji BOOT (oszczędność miejsca). */
+/* ---------------- UART1 (linia modemu) — odbiór w PRZERWANIU --------------- *
+ * Ten SIM900 odrzuca AT+CIPRXGET (tryb ręczny), więc dane lecą trybem push
+ * (+IPD). SPM blokuje CPU ~9 ms; przy 9600 bps wpada ~9 bajtów, a sprzętowy
+ * bufor USART ma 2 bajty -> bez ISR byłby overrun i utrata danych (CRC FAIL).
+ * ISR leży w sekcji BOOT (NRWW) i wykonuje się także podczas programowania
+ * sekcji aplikacji (RWW), więc wchłania bajty w trakcie SPM i nic nie ginie.
+ * Pierścień 256 (uint8_t głowa/ogon zawijają się same). */
+#define RBUF_SZ 256
+static volatile uint8_t rbuf[RBUF_SZ];
+static volatile uint8_t rb_head, rb_tail;
+
+ISR(USART1_RX_vect)
+{
+    uint8_t s = UCSR1A;
+    uint8_t c = UDR1;
+    if (s & ((1 << FE1) | (1 << DOR1)))     /* odrzuć bajt z błędem ramki/overrun */
+        return;
+    uint8_t nh = (uint8_t)(rb_head + 1);
+    if (nh != rb_tail) { rbuf[rb_head] = c; rb_head = nh; }
+}
+
 static void u1_init(void)
 {
     UBRR1H = (uint8_t)(UBRR_VAL(UART1_BAUD) >> 8);
     UBRR1L = (uint8_t)(UBRR_VAL(UART1_BAUD));
-    UCSR1B = (1 << RXEN1) | (1 << TXEN1);
+    UCSR1B = (1 << RXEN1) | (1 << TXEN1) | (1 << RXCIE1);
     UCSR1C = (1 << UCSZ11) | (1 << UCSZ10);
+    rb_head = rb_tail = 0;
+    /* Wektory przerwań do sekcji BOOT (IVSEL=1), potem globalne zezwolenie.
+     * jump_to_app() przywraca IVSEL=0 i wyłącza USART przed oddaniem app. */
+    MCUCR = (1 << IVCE);
+    MCUCR = (1 << IVSEL);
+    sei();
 }
 static void u1_putc(char c) { while (!(UCSR1A & (1 << UDRE1))); UDR1 = (uint8_t)c; }
 static void u1_puts(const char *s) { while (*s) u1_putc(*s++); }
@@ -55,13 +77,14 @@ static void u0_init(void)
 }
 static void u0_puts(const char *s) { while (*s) { while (!(UCSR0A & (1 << UDRE0))); UDR0 = (uint8_t)*s++; } }
 
-/* Odbiór 1 bajtu z grubym timeoutem (~ms*pętle). Zwraca -1 przy timeoutcie. */
+/* Odbiór 1 bajtu z pierścienia (wypełnianego w ISR) z grubym timeoutem.
+ * Zwraca -1 przy timeoutcie. */
 static int u1_getc(uint16_t ms)
 {
     while (ms--) {
         for (uint16_t i = 0; i < 800; i++) {     /* ~1 ms @8MHz (zgrubnie) */
-            if (UCSR1A & (1 << RXC1))
-                return (uint8_t)UDR1;
+            if (rb_head != rb_tail)
+                return (uint8_t)rbuf[rb_tail++];
         }
     }
     return -1;
@@ -103,66 +126,6 @@ static uint8_t wait_token(const char *tok, uint16_t ms)
         if (!strncmp(ln, "ERROR", 5)) return 0;
     }
     return 0;
-}
-
-/* ---------------- Pobieranie danych TCP przez CIPRXGET (pull) ------------ *
- * W trybie ręcznym (AT+CIPRXGET=1) host sam decyduje, kiedy pobrać dane:
- *   AT+CIPRXGET=2,<want>  ->  "+CIPRXGET: 2,<len>,<rest>" + <len> bajtów + OK
- * <len> bywa < want (tyle, ile jest w buforze); 0 = chwilowo pusto; przy
- * zamknięciu pojawi się "CLOSED". Dane są surowe (mogą zawierać CR/LF/0x1A),
- * więc czytamy DOKŁADNIE <len> bajtów po liczniku, nie liniowo. */
-static uint8_t  rx_stage[256];
-static uint16_t rx_n, rx_i;
-
-/* Jedno pobranie do rx_stage. Zwraca liczbę bajtów (>=0) lub -1 (błąd/CLOSED). */
-static int rx_pull(uint16_t want)
-{
-    char ln[48];
-    u1_puts("AT+CIPRXGET=2,");
-    { char ps[6]; utoa(want, ps, 10); u1_puts(ps); }
-    u1_putc('\r');
-
-    int len = -1;
-    for (uint8_t k = 0; k < 8; k++) {
-        if (u1_getline(ln, sizeof(ln), 3000) < 0) return -1;
-        if (!strncmp(ln, "+CIPRXGET: 2", 12)) {
-            char *p = ln + 12;              /* "...2,<len>,<rest>" */
-            if (*p == ',') p++;
-            len = 0;
-            while (*p >= '0' && *p <= '9') len = len * 10 + (*p++ - '0');
-            break;
-        }
-        if (strstr(ln, "CLOSED"))      return -1;   /* serwer zamknął */
-        if (!strncmp(ln, "ERROR", 5))  return -1;
-    }
-    if (len <= 0) return len < 0 ? -1 : 0;
-
-    for (int i = 0; i < len; i++) {
-        int c = u1_getc(3000);
-        if (c < 0) return -1;
-        rx_stage[i] = (uint8_t)c;
-    }
-    /* po danych: "\r\nOK\r\n" — skonsumuj do OK */
-    for (uint8_t k = 0; k < 4; k++) {
-        if (u1_getline(ln, sizeof(ln), 1000) < 0) break;
-        if (!strncmp(ln, "OK", 2)) break;
-    }
-    return len;
-}
-
-/* Następny bajt strumienia (dociąga przez CIPRXGET gdy staging pusty).
- * Zwraca -1 przy braku danych w limicie czasu / zamknięciu. */
-static int rx_getc(void)
-{
-    if (rx_i < rx_n) return rx_stage[rx_i++];
-    rx_n = rx_i = 0;
-    for (uint8_t tries = 0; tries < 200; tries++) {   /* ~ do ~8 s łącznie */
-        int got = rx_pull(sizeof(rx_stage));
-        if (got < 0)  return -1;
-        if (got > 0) { rx_n = (uint16_t)got; rx_i = 1; return rx_stage[0]; }
-        _delay_ms(40);                                /* bufor pusty -> poczekaj */
-    }
-    return -1;
 }
 
 /* ---------------- SPM: zapis strony aplikacji --------------------------- */
@@ -277,11 +240,9 @@ static uint8_t do_ota(void)
         if (!ip) { u0_puts("BOOT: noIP\r\n"); return 0; }
     }
 
-    /* Tryb RĘCZNEGO odbioru: modem NIE sypie danych sam (+IPD), tylko trzyma je
-     * w swoim buforze; host pobiera na żądanie przez AT+CIPRXGET=2,<len>. To daje
-     * kontrolę przepływu (host↔modem, lokalnie po UART) — podczas SPM dane czekają
-     * w modemie, a nadmiar dławi TCP. Koniec gubienia bajtów. */
-    if (!at_ok("AT+CIPRXGET=1", 1000)) { u0_puts("BOOT: rxget!\r\n"); return 0; }
+    /* Tryb surowy (push): modem sypie dane wprost, bez prefiksu +IPD,<n>:.
+     * Gubienie bajtów podczas SPM blokuje ISR+pierścień (patrz u1_init). */
+    if (!at_ok("AT+CIPHEAD=0", 1000)) { u0_puts("BOOT: head!\r\n"); return 0; }
 
     /* CIPSTART: host+port z bloku OTA w EEPROM (zapisane przez aplikację). */
     char host[HOST_MAXLEN];
@@ -323,28 +284,16 @@ static uint8_t do_ota(void)
     u1_puts("FWREQ\n");
     u1_putc(0x1A);
 
-    /* Potwierdzenie wysłania żądania — to URC modemu (nie dane TCP). */
+    /* Nagłówek "FW <size> <crc>" — pomiń "SEND OK" i inne linie modemu.
+     * W trybie surowym (push) po SEND OK płyną wprost dane TCP: najpierw ta
+     * linia nagłówka, zaraz po niej (od u1_getc) surowy obraz. */
     {
-        uint8_t ok = 0;
-        for (uint8_t k = 0; k < 6 && !ok; k++) {
-            if (u1_getline(ln, sizeof(ln), 8000) < 0) break;
-            if (!strncmp(ln, "SEND OK", 7)) ok = 1;
-            if (!strncmp(ln, "ERROR", 5))   return 0;
+        uint8_t hdr = 0;
+        for (uint8_t k = 0; k < 6 && !hdr; k++) {
+            if (u1_getline(ln, sizeof(ln), 8000) < 0) return 0;
+            if (!strncmp(ln, "FW ", 3)) hdr = 1;
         }
-        /* brak SEND OK nie jest krytyczny — dane i tak pociągniemy przez CIPRXGET */
-    }
-
-    /* Nagłówek "FW <size> <crc>\n" — to już DANE TCP: pobieramy je (i resztę
-     * obrazu) przez CIPRXGET, bajt po bajcie z rx_getc(). */
-    {
-        uint8_t n = 0;
-        for (;;) {
-            int c = rx_getc();
-            if (c < 0) return 0;
-            if (c == '\n') { ln[n] = '\0'; break; }
-            if (c != '\r' && n < sizeof(ln) - 1) ln[n++] = (char)c;
-        }
-        if (strncmp(ln, "FW ", 3)) { u0_puts("BOOT: noFW\r\n"); return 0; }
+        if (!hdr) { u0_puts("BOOT: noFW\r\n"); return 0; }
     }
     uint32_t size = 0, want_crc = 0;
     {
@@ -367,7 +316,7 @@ static uint8_t do_ota(void)
     uint8_t  dirty = 0;
     memset(page_buf, 0xFF, sizeof(page_buf));
     while (got < size) {
-        int c = rx_getc();                  /* pull przez CIPRXGET (host steruje) */
+        int c = u1_getc(8000);              /* strumień push, ISR chroni przed utratą */
         if (c < 0) return dirty ? 2 : 0;
         page_buf[fill++] = (uint8_t)c;
         crc = crc32_up(crc, (uint8_t)c);
