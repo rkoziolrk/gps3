@@ -125,3 +125,27 @@ avrdude -c usbasp -p m64 -U flash:w:build/tracker.hex:i
 ```
 
 Dalej już tylko: `FWUPD*<PIN>` SMS-em (albo `#FWUPD` z serwera) → OTA.
+
+## Decyzje projektowe
+
+**Bootloader jest niezmienną kotwicą — aktualizowany tylko przewodowo (VVDI/ISP),
+nigdy zdalnie.** Rozważaliśmy aktualizację bootloadera z poziomu działającego
+urządzenia i świadomie z niej rezygnujemy:
+
+- **Z samej aplikacji to niemożliwe sprzętowo.** Na AVR instrukcja SPM (zapis
+  flasha) działa wyłącznie wykonywana z sekcji BOOT; kod aplikacji (RWW) nie
+  zapisze żadnej strony flasha. Aplikacja nie odłoży sobie nawet obrazu
+  bootloadera (EEPROM 2 KB < 4 KB bootloadera, brak innego magazynu).
+- **Bootloader mógłby przepisać sam siebie** (sekcja BOOT może programować własne
+  strony), ale to aktualizowanie *tego, co aktualizuje*: zanik zasilania w trakcie
+  zapisu sekcji BOOT = brak działającego bootloadera, a żaden kod aplikacji tego
+  nie naprawi (brak SPM poza BOOT). Ratunek tylko VVDI/ISP — czyli tracimy
+  gwarancję „zawsze odzyskiwalny zdalnie", dla której bootloader w ogóle istnieje.
+- **Wariant dwustopniowy** (mały niezmienny loader przepisujący resztę) odpada:
+  ATmega64 ma jedną sekcję BOOT (max 2048 słów), tylko ona ma SPM, i jest już
+  niemal pełna (≈4062/4096 B).
+
+Podział odpowiedzialności: **aplikacja → OTA do woli (bootloader nietknięty,
+zawsze odzyskiwalny); bootloader → kabel, tylko gdy on sam się zmienia (rzadko).**
+Zmiana bootloadera na pull/CIPRXGET była takim wyjątkiem; docelowo bootloader ma
+pozostać stały.
