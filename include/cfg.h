@@ -9,7 +9,7 @@
 #define CFG_H
 
 /* --- Tożsamość / wersja -------------------------------------------------- */
-#define FW_VERSION    "3.0"        /* nowy firmware (nie mylić z oryg. 2.65)  */
+#define FW_VERSION    "3.2"        /* nowy firmware (nie mylić z oryg. 2.65)  */
 #define PROTO_VERSION 1            /* wersja protokołu serwera (nowy, czysty) */
 #define GPS_MODULE    "PA6C"
 #define GSM_MODULE    "SIM900"
