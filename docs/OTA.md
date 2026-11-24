@@ -76,6 +76,17 @@ Po TCP, tekstowo w nagłówku, potem surowe bajty:
   skok do aplikacji. Niezgodność → `FWERR`, ponów przy następnym starcie.
 - Serwer serwuje `build/tracker.bin` (patrz serwer: `--fw <plik>`).
 
+> **Odbiór UART w przerwaniu (ważne dla niezawodności).** SPM blokuje CPU na
+> ~9 ms; przy 9600 bps w tym czasie wpada ~9 bajtów, a sprzętowy bufor USART ma
+> tylko 2 bajty. Gdyby bootloader odbierał danymi pollingiem, podczas zapisu
+> każdej strony gubiłby bajty → CRC FAIL i wieczne ponawianie (objaw: log urywa
+> się na `flashuje...` i wraca do `modem?`). Dlatego odbiór idzie przez ISR
+> `USART1_RX_vect` z buforem pierścieniowym; ISR leży w sekcji BOOT (NRWW), więc
+> działa także w trakcie programowania sekcji aplikacji (RWW) i nic nie ginie.
+> Bootloader ustawia na czas OTA `IVSEL=1` (wektory w BOOT); `jump_to_app()`
+> przywraca `IVSEL=0`. Pacing serwera (strony 256 B + przerwa) nadal pomaga, ale
+> to ISR jest tu gwarantem — bez niej wyrównanie faz zależy od buforowania SIM900.
+
 ## Rdzeń bootloadera (`boot/boot.c`)
 
 Gotowe, standardowe elementy:

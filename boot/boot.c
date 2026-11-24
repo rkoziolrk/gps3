@@ -29,13 +29,39 @@
 #define META_SIZE_ADDR 0x07F4
 #define META_CRC_ADDR  0x07F8
 
-/* ---------------- UART1 (linia modemu, surowo) --------------------------- */
+/* ---------------- UART1 (linia modemu) — odbiór w PRZERWANIU --------------- *
+ * SPM (boot_page_erase/write) blokuje CPU na ~9 ms. Przy 9600 bps w tym czasie
+ * wpada ~9 bajtów, a sprzętowy bufor USART ma tylko 2 bajty -> bez ISR byłby
+ * overrun i utrata danych obrazu (CRC FAIL / timeout -> wieczne ponawianie).
+ * ISR leży w sekcji BOOT (NRWW), więc jest wykonywalna także w trakcie
+ * programowania sekcji aplikacji (RWW) — bajty trafiają do pierścienia i nic
+ * nie ginie. Pierścień 256 (uint8_t głowa/ogon zawijają się same). */
+#define RBUF_SZ 256
+static volatile uint8_t rbuf[RBUF_SZ];
+static volatile uint8_t rb_head, rb_tail;
+
+ISR(USART1_RX_vect)
+{
+    uint8_t s = UCSR1A;
+    uint8_t c = UDR1;
+    if (s & ((1 << FE1) | (1 << DOR1)))     /* odrzuć bajt z błędem ramki/overrun */
+        return;
+    uint8_t nh = (uint8_t)(rb_head + 1);
+    if (nh != rb_tail) { rbuf[rb_head] = c; rb_head = nh; }
+}
+
 static void u1_init(void)
 {
     UBRR1H = (uint8_t)(UBRR_VAL(UART1_BAUD) >> 8);
     UBRR1L = (uint8_t)(UBRR_VAL(UART1_BAUD));
-    UCSR1B = (1 << RXEN1) | (1 << TXEN1);
+    UCSR1B = (1 << RXEN1) | (1 << TXEN1) | (1 << RXCIE1);
     UCSR1C = (1 << UCSZ11) | (1 << UCSZ10);
+    rb_head = rb_tail = 0;
+    /* Wektory przerwań do sekcji BOOT (IVSEL=1), potem globalne zezwolenie.
+     * jump_to_app() przywraca IVSEL=0 i wyłącza USART przed oddaniem app. */
+    MCUCR = (1 << IVCE);
+    MCUCR = (1 << IVSEL);
+    sei();
 }
 static void u1_putc(char c) { while (!(UCSR1A & (1 << UDRE1))); UDR1 = (uint8_t)c; }
 static void u1_puts(const char *s) { while (*s) u1_putc(*s++); }
@@ -51,13 +77,14 @@ static void u0_init(void)
 }
 static void u0_puts(const char *s) { while (*s) { while (!(UCSR0A & (1 << UDRE0))); UDR0 = (uint8_t)*s++; } }
 
-/* Odbiór 1 bajtu z grubym timeoutem (~ms*pętle). Zwraca -1 przy timeoutcie. */
+/* Odbiór 1 bajtu z pierścienia (wypełnianego w ISR) z grubym timeoutem.
+ * Zwraca -1 przy timeoutcie. */
 static int u1_getc(uint16_t ms)
 {
     while (ms--) {
         for (uint16_t i = 0; i < 800; i++) {     /* ~1 ms @8MHz (zgrubnie) */
-            if (UCSR1A & (1 << RXC1))
-                return (uint8_t)UDR1;
+            if (rb_head != rb_tail)
+                return (uint8_t)rbuf[rb_tail++];
         }
     }
     return -1;
