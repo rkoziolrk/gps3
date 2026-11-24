@@ -979,6 +979,17 @@ initMap(); connect();
 """
 
 
+def quiet_reset_handler(loop, context):
+    """Windows (Proactor) zgłasza nagłe zerwanie TCP przez klienta jako wyjątek
+    w callbacku transportu (WinError 10054). To nieszkodliwe — urządzenie po
+    OTA/zerwaniu po prostu zamyka gniazdo RST-em. Takie przypadki wyciszamy,
+    resztę przekazujemy do domyślnego handlera."""
+    exc = context.get("exception")
+    if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return
+    loop.default_exception_handler(context)
+
+
 async def graceful_shutdown(state, servers):
     """Przy zamykaniu: powiadom klientów, że serwer schodzi.
       - urządzenia: ramka '#BYE' (firmware przechodzi w backoff i ponawia co 60 s),
@@ -1096,6 +1107,7 @@ async def main():
     # Graceful shutdown na SIGINT/SIGTERM (np. zatrzymanie usługi na OpenWRT):
     # ustaw zdarzenie, wyślij #BYE do urządzeń i 'shutdown' do przeglądarek.
     loop = asyncio.get_running_loop()
+    loop.set_exception_handler(quiet_reset_handler)   # wycisz WinError 10054 itp.
     stop = asyncio.Event()
     try:
         for sig in (signal.SIGINT, signal.SIGTERM):
