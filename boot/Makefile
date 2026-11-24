@@ -26,7 +26,7 @@ LDFLAGS := -mmcu=$(MCU) -Wl,--gc-sections -Wl,--relax \
 
 all: boot.hex
 
-boot.elf: boot.c
+boot.elf: boot.c ../include/cfg.h ../include/board.h ../include/ota.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@
 	$(SIZE) --format=avr --mcu=$(MCU) $@
 

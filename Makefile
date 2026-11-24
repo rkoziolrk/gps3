@@ -27,9 +27,11 @@ OBJS       := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
 
 TARGET     := $(BUILDDIR)/tracker
 
+# -MMD -MP: generuj pliki .d ze śledzeniem zależności od nagłówków
 CFLAGS     := -mmcu=$(MCU) -DF_CPU=$(F_CPU) -I$(INCDIR) \
               -Os -Wall -Wextra -std=gnu99 \
-              -ffunction-sections -fdata-sections
+              -ffunction-sections -fdata-sections \
+              -MMD -MP
 LDFLAGS    := -mmcu=$(MCU) -Wl,--gc-sections
 
 .PHONY: all size flash disasm clean
@@ -60,3 +62,8 @@ flash: $(TARGET).hex
 
 clean:
 	rm -rf $(BUILDDIR)
+
+# Zależności od nagłówków (z -MMD): zmiana np. include/cfg.h przebuduje tylko
+# te obiekty, które faktycznie go używają. Bez tego zmiana FW_VERSION nie
+# przebudowywała proto.o i HELLO nosił starą wersję.
+-include $(OBJS:.o=.d)
