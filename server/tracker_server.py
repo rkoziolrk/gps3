@@ -32,6 +32,7 @@ import collections
 import datetime
 import json
 import os
+import signal
 import sys
 
 LOG_FILE = None
@@ -473,6 +474,7 @@ async def client(reader, writer, args, state):
     peer = writer.get_extra_info("peername")
     who = f"{peer[0]}:{peer[1]}" if peer else "?"
     conn = {"who": who, "imei": None}
+    state.conns[who] = writer
     log(f"{NN}Połączenie od {who}", BOLD, CYAN, level=0)
     loop = asyncio.get_running_loop()
     buf = b""                               # dane jeszcze bez '\n'
@@ -514,6 +516,7 @@ async def client(reader, writer, args, state):
         log(f"[{who}] {NN}połączenie zerwane: {e!r}", RED, level=1)
     finally:
         writer.close()
+        state.conns.pop(who, None)
         state.on_disconnect(who)
         if buf:
             log(f"[{who}] {RX}niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW, level=0)
@@ -532,8 +535,10 @@ class State:
 
     def __init__(self, max_track=500, max_raw=300):
         self.devices = {}                       # imei -> rekord urządzenia
+        self.conns = {}                         # who -> writer (aktywne poł. urządzeń)
         self.raw = collections.deque(maxlen=max_raw)
         self.subs = set()                       # kolejki SSE (po jednej na przeglądarkę)
+        self.sse_writers = set()                # writery SSE (do flush przy zamykaniu)
         self.max_track = max_track
         self.ota_fw = None
         self.ota_armed = False
@@ -670,6 +675,7 @@ async def sse_stream(writer, state):
     to pełna migawka, potem przyrostowo. Keepalive co 15 s (komentarz SSE)."""
     q = asyncio.Queue(maxsize=400)
     state.subs.add(q)
+    state.sse_writers.add(writer)
     try:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
                      b"Cache-Control: no-store\r\nConnection: keep-alive\r\n"
@@ -688,6 +694,7 @@ async def sse_stream(writer, state):
         pass
     finally:
         state.subs.discard(q)
+        state.sse_writers.discard(writer)
         try:
             writer.close()
         except Exception:
@@ -809,7 +816,7 @@ INDEX_HTML = r"""<!doctype html>
 const CAN_LABELS = {can_speed:"prędkość CAN [km/h]", pedal:"pedał gazu", odo:"przebieg [m]",
                     f_a:"pole ?A", f_b:"pole ?B (nie paliwo)", stat:"status", _k:"stała"};
 const devices = {};
-let selected = null, map = null, layers = {};
+let selected = null, map = null, layers = {}, es = null, retryTimer = null;
 
 function el(html){const t=document.createElement("template");t.innerHTML=html.trim();return t.content.firstChild;}
 function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
@@ -927,20 +934,91 @@ function applyUpdate(m){
   else if(m.kind==="can"){ const d=devices[p.imei]; if(d){ if(p.can)d.can=p.can; renderSide(); } }
   else if(m.kind==="raw"){ addRaw(p); }
   else if(m.kind==="ota"){ renderOta(p); }
+  else if(m.kind==="shutdown"){ onShutdown(); }
+}
+
+function setStatus(on, text){
+  document.getElementById("dot").classList.toggle("on", !!on);
+  document.getElementById("status").textContent = text;
+}
+function markAllOffline(){
+  for(const im in devices) devices[im].online=false;
+  renderSide();
+}
+function scheduleRetry(sec){
+  if(retryTimer) return;                 // już zaplanowane
+  let left=sec;
+  setStatus(false, `rozłączono — ponawiam za ${left}s`);
+  retryTimer=setInterval(()=>{
+    left--;
+    if(left<=0){ clearInterval(retryTimer); retryTimer=null; connect(); }
+    else setStatus(false, `rozłączono — ponawiam za ${left}s`);
+  },1000);
+}
+function onShutdown(){
+  markAllOffline();
+  setStatus(false,"serwer się wyłącza…");
+  if(es){ es.close(); es=null; }
+  scheduleRetry(60);                     // zgodnie z firmware: próba co 60 s
 }
 
 function connect(){
-  const es=new EventSource("/api/events");
+  es=new EventSource("/api/events");
   es.addEventListener("snapshot",e=>applySnapshot(JSON.parse(e.data)));
   es.onmessage=e=>applyUpdate(JSON.parse(e.data));
-  es.onopen=()=>{document.getElementById("dot").classList.add("on");document.getElementById("status").textContent="połączono";};
-  es.onerror=()=>{document.getElementById("dot").classList.remove("on");document.getElementById("status").textContent="rozłączono — ponawiam…";};
+  es.onopen=()=>setStatus(true,"połączono");
+  es.onerror=()=>{                       // zerwanie — nie pozwól przeglądarce
+    if(es){ es.close(); es=null; }       // młócić co ~3s; ponawiaj co 60s
+    scheduleRetry(60);
+  };
 }
 initMap(); connect();
 </script>
 </body>
 </html>
 """
+
+
+async def graceful_shutdown(state, servers):
+    """Przy zamykaniu: powiadom klientów, że serwer schodzi.
+      - urządzenia: ramka '#BYE' (firmware przechodzi w backoff i ponawia co 60 s),
+      - przeglądarki (SSE): zdarzenie 'shutdown' (strona ponawia co 60 s).
+    Potem domknij połączenia po swojej stronie."""
+    for s in servers:                           # przestań przyjmować nowe połączenia
+        s.close()
+    log(f"{NN}Zamykanie — informuję klientów (#BYE / shutdown)...", BOLD, YELLOW, level=0)
+
+    # Przeglądarki (SSE): wyślij 'shutdown' WPROST na gniazdo i domknij je.
+    # (nie przez kolejkę taska w tle — proces zaraz kończy pętlę i gubiłby bufor)
+    state.seq += 1
+    smsg = json.dumps({"seq": state.seq, "kind": "shutdown",
+                       "payload": {"t": now_iso()}}, ensure_ascii=False)
+    for w in list(state.sse_writers):
+        try:
+            w.write(f"data: {smsg}\n\n".encode("utf-8"))
+            await asyncio.wait_for(w.drain(), 2)
+            w.close()
+        except Exception:
+            pass
+
+    # Urządzenia: ramka '#BYE' (firmware -> backoff, ponawia co 60 s) i domknięcie.
+    bye = nproto_reply("BYE").encode("latin-1")  # "#BYE*XX\r\n"
+    for who, writer in list(state.conns.items()):
+        try:
+            writer.write(bye)
+            await asyncio.wait_for(writer.drain(), 2)
+            log(f"[{who}] {TX}#BYE (serwer schodzi)", YELLOW, level=0)
+            writer.close()
+        except Exception:
+            pass
+
+    # Poczekaj aż gniazda faktycznie się domkną (flush + FIN), z limitem czasu.
+    for w in list(state.sse_writers) + list(state.conns.values()):
+        try:
+            await asyncio.wait_for(w.wait_closed(), 2)
+        except Exception:
+            pass
+    log(f"{NN}Serwer zatrzymany.", BOLD, GREEN, level=0)
 
 
 async def main():
@@ -1014,11 +1092,28 @@ async def main():
         log(f"Log: {LOG_FILE}", DIM, level=0)
 
     servers = [server] + ([web] if web else [])
+
+    # Graceful shutdown na SIGINT/SIGTERM (np. zatrzymanie usługi na OpenWRT):
+    # ustaw zdarzenie, wyślij #BYE do urządzeń i 'shutdown' do przeglądarek.
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
     try:
-        await asyncio.gather(*(s.serve_forever() for s in servers))
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        have_signals = True
+    except NotImplementedError:                 # np. Windows — fallback niżej
+        have_signals = False
+
+    serve_tasks = [asyncio.ensure_future(s.serve_forever()) for s in servers]
+    try:
+        if have_signals:
+            await stop.wait()
+        else:
+            await asyncio.gather(*serve_tasks)   # Ctrl+C złapie KeyboardInterrupt
     finally:
-        for s in servers:
-            s.close()
+        await graceful_shutdown(state, servers)
+        for t in serve_tasks:
+            t.cancel()
 
 
 if __name__ == "__main__":

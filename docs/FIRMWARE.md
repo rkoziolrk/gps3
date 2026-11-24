@@ -49,6 +49,23 @@ podłączonym module CAN. Mając surową ramkę modułu, doprecyzujemy w `can.c`
 rozbicie na pola i w końcu kalibrację paliwa (potrzebny log przy innym poziomie
 baku — `docs/CAN.md`).
 
+## Połączenie z serwerem, reconnect i zamknięcie serwera
+
+Firmware utrzymuje jedną sesję TCP i wysyła `#HELLO`/`#PING`/`#POS`/`#RAW`;
+serwer odpowiada `#OK` (albo `#ERR` przy złej sumie). Reakcje na utratę łącza:
+
+- **TCP CLOSED** (nagłe zerwanie): jedna szybka próba wznowienia (od `AT+CIPSHUT`).
+- **Nieudane połączenie / timeout sekwencji**: przejście w stan `G_WAIT` i ponawianie
+  **co 60 s** (`RECONNECT_PERIOD`) — koniec młócenia sekwencji w pętli.
+- **`#BYE` od serwera** (serwer zgłasza, że schodzi — patrz `server/tracker_server.py`,
+  graceful shutdown): natychmiast wchodzi w `G_WAIT` i ponawia co 60 s, aż serwer
+  wróci. Ramka bywa opakowana w prefiks `+IPD,<len>:` (bo `AT+CIPHEAD=1`), więc
+  `gsm_feed()` szuka podciągu `#BYE` w całej linii.
+
+Stan `G_WAIT` jest w enumie **przed** `G_ONLINE`, więc `gsm_online()` traktuje
+oczekiwanie jako offline — pętla główna wyzeruje `greeted` i po wznowieniu wyśle
+od nowa `#HELLO`. W oczekiwaniu linia UART słucha GPS (pozycje buforuje `track.c`).
+
 ## Konfiguracja (`include/cfg.h`)
 
 - `SERVER_HOST_DEFAULT` / `SERVER_PORT_DEFAULT` — serwer domyślny (bez blokady

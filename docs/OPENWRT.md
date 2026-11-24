@@ -174,6 +174,14 @@ Sterowanie:
 /etc/init.d/tracker disable
 ```
 
+> **Zamknięcie jest „grzeczne".** Na `SIGTERM`/`SIGINT` (czyli `stop`/`restart`
+> usługi albo Ctrl+C) serwer zanim zejdzie:
+> - wysyła każdemu urządzeniu ramkę `#BYE` — firmware przechodzi w tryb
+>   oczekiwania i **ponawia połączenie co 60 s**, zamiast młócić w pętli;
+> - wysyła przeglądarkom zdarzenie `shutdown` — strona pokazuje „serwer się
+>   wyłącza" i **ponawia co 60 s**.
+> Dzięki temu po `restart` klienci wracają sami, gdy serwer znów wstanie.
+
 > OTA: jeśli chcesz aktualizować zdalnie, dodaj do `command` argument
 > `--fw /root/tracker.bin`. Z `--fw` serwer startuje z **uzbrojonym** OTA; możesz
 > go rozbroić/uzbroić przyciskiem w interfejsie WWW (patrz sekcja 8).

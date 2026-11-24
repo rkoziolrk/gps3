@@ -19,9 +19,12 @@
 #include <string.h>
 #include <stdio.h>
 
-enum { G_OFF, G_SEQ, G_ONLINE, G_SEND_PROMPT, G_SEND_DATA, G_SMS_READ, G_SMS_DEL };
+/* G_WAIT jest PRZED G_ONLINE — dzięki temu gsm_online() (state >= G_ONLINE)
+ * poprawnie traktuje oczekiwanie na reconnect jako stan offline. */
+enum { G_OFF, G_WAIT, G_SEQ, G_ONLINE, G_SEND_PROMPT, G_SEND_DATA, G_SMS_READ, G_SMS_DEL };
 
-#define SMS_POLL_PERIOD 60       /* [s] jak często czytać SMS gdy online */
+#define SMS_POLL_PERIOD  60      /* [s] jak często czytać SMS gdy online */
+#define RECONNECT_PERIOD 60      /* [s] odstęp między próbami połączenia (backoff) */
 
 /* Jednorazowe utrwalenie stałego baudu 9600 w modemie (AT+IPR=9600; AT&W),
  * żeby SIM900 zawsze startował w 9600 i wystawiał RDY. Flaga w EEPROM pod
@@ -35,6 +38,8 @@ static uint8_t      state;
 static uint8_t      step;
 static uint32_t     step_t0;
 static uint8_t      retries;
+static uint32_t     reconnect_t0;    /* początek oczekiwania na reconnect       */
+static uint8_t      reconnect_step;  /* od którego kroku wznowić (pełna/skrót)   */
 static char         imei[16];
 static char         pending[160];
 static uint8_t      has_pending;
@@ -48,7 +53,7 @@ static char         sms_body[80];
 static uint32_t     last_sms_poll;   /* ostatni odczyt SMS w trybie online    */
 
 /* Flagi ustawiane przez gsm_feed(), czytane przez gsm_tick(). */
-static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed;
+static volatile uint8_t f_ok, f_err, f_connect, f_sendok, f_closed, f_bye;
 
 #define STEP_TIMEOUT   10
 #define MAX_RETRIES     3
@@ -100,6 +105,7 @@ void gsm_init(const cfg_t *c, void (*sms_cb)(const char *))
     has_pending = 0;
     sms_have = sms_marker = in_cmgr = 0;
     last_sms_poll = 0;
+    f_bye = 0;
 
     /* Piny modułów: wyjścia, stan NISKI (idle) — jak w oryginale. */
     PIN_OUT(MODEM_DDR, MODEM_PWR_BIT);
@@ -209,6 +215,9 @@ void gsm_feed(const char *line)
     if (!strncmp(line, "ALREADY CONNECT", 15))f_connect = 1;
     if (!strncmp(line, "SEND OK", 7))         f_sendok = 1;
     if (!strncmp(line, "CLOSED", 6) || !strncmp(line, "CONNECT FAIL", 12)) f_closed = 1;
+    /* '#BYE' od serwera — bywa opakowane w prefiks "+IPD,<len>:", więc szukamy
+     * podciągu w całej linii, nie tylko na początku. */
+    if (strstr(line, "#BYE"))                 f_bye = 1;   /* serwer się wyłącza */
 }
 
 static void send_step(uint32_t now)
@@ -226,6 +235,20 @@ static void send_step(uint32_t now)
     step_t0 = now;
 }
 
+/* Wejście w backoff: odczekaj RECONNECT_PERIOD, potem wznów od kroku `from`.
+ * `from` = 0 (pełna sekwencja, gdy padło na wczesnym kroku) lub STEP_CIPSHUT
+ * (sam reset stosu IP, gdy GPRS był już podniesiony). */
+static void enter_wait(uint32_t now, uint8_t from, const char *why)
+{
+    dbg_line("GSM", why);
+    state = G_WAIT;
+    reconnect_t0 = now;
+    reconnect_step = from;
+    retries = 0;
+    f_closed = f_bye = 0;
+    gsm_route(0);                       /* w oczekiwaniu słuchaj GPS */
+}
+
 void gsm_tick(uint32_t now)
 {
     switch (state) {
@@ -233,9 +256,10 @@ void gsm_tick(uint32_t now)
         if (step_t0 == 0) { send_step(now); return; }
 
         if (step == STEP_LAST) {
-            if (f_connect) { state = G_ONLINE; retries = 0; last_sms_poll = now; dbg_line("GSM", "online (TCP)"); }
+            if (f_connect) { state = G_ONLINE; retries = 0; last_sms_poll = now; f_closed = f_bye = 0; dbg_line("GSM", "online (TCP)"); }
             else if ((now - step_t0) >= STEP_TIMEOUT) {
-                if (++retries > MAX_RETRIES) { step = 0; retries = 0; step_t0 = 0; f_closed = 0; }
+                if (++retries > MAX_RETRIES)
+                    enter_wait(now, STEP_CIPSHUT, "TCP nieudany -> ponawiam za 60s");
                 else send_step(now);
             }
             return;
@@ -257,16 +281,23 @@ void gsm_tick(uint32_t now)
             return;
         }
         if ((now - step_t0) >= STEP_TIMEOUT) {
-            if (++retries > MAX_RETRIES) {
-                dbg_line("GSM", "sekwencja timeout -> restart");
-                step = 0; retries = 0; step_t0 = 0; f_closed = 0;
-            } else {
+            if (++retries > MAX_RETRIES)
+                enter_wait(now, 0, "sekwencja timeout -> ponawiam za 60s");
+            else
                 send_step(now);
-            }
+        }
+        break;
+
+    case G_WAIT:
+        /* Backoff: odczekaj 60 s i wznów połączenie. W międzyczasie słuchaj GPS. */
+        if ((now - reconnect_t0) >= RECONNECT_PERIOD) {
+            dbg_line("GSM", "ponawiam polaczenie");
+            state = G_SEQ; step = reconnect_step; step_t0 = 0; retries = 0;
         }
         break;
 
     case G_ONLINE:
+        if (f_bye)    { enter_wait(now, STEP_CIPSHUT, "serwer: BYE -> ponawiam za 60s"); return; }
         if (f_closed) { f_closed = 0; dbg_line("GSM", "TCP CLOSED -> reconnect"); state = G_SEQ; step = STEP_CIPSHUT; step_t0 = 0; return; }
         if (has_pending) {
             gsm_route(1);               /* wysyłka -> słuchaj modemu */
