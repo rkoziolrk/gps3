@@ -20,15 +20,25 @@ Uruchomienie:
 --device-host / --device-port MUSZĄ być takie, jakie urządzenie ma zapisane:
 odpowiedź na HSK zawiera adres serwera, a jeśli różni się od zapisanego,
 urządzenie zapisuje nowy adres i się restartuje.
+
+Interfejs WWW (mapa + odczyt CAN + log na żywo) rusza domyślnie na porcie 8080
+z tego samego procesu — tylko biblioteka standardowa, bez zależności, więc
+chodzi też na routerze OpenWRT. Uruchomienie na routerze: docs/OPENWRT.md.
 """
 
 import argparse
 import asyncio
+import collections
 import datetime
+import json
 import os
 import sys
 
 LOG_FILE = None
+
+
+def now_iso():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # Poziom gadatliwości terminala: 0=cicho, 1=normalnie, 2=-v (surowe bajty),
 # 3=-vv (rozbicie pól). Plik logu dostaje zawsze poziom >= 2.
@@ -248,8 +258,11 @@ def nproto_reply(typ):
     return f"#{body}*{nproto_xor(body):02X}\r\n"
 
 
-def handle_new_proto(frame):
-    """Nowy protokół firmware 3.x: #TYP,pola*XOR. Zwraca (opis, odpowiedź)."""
+def handle_new_proto(frame, state, conn):
+    """Nowy protokół firmware 3.x: #TYP,pola*XOR. Zwraca (opis, odpowiedź).
+
+    POS/RAW nie niosą IMEI — wiążemy je z urządzeniem po połączeniu TCP
+    (IMEI zapamiętany z HELLO w conn["imei"])."""
     core, star, cs = frame[1:].partition("*")
     if star:
         want = int(cs[:2], 16) if len(cs) >= 2 and all(c in "0123456789abcdefABCDEF" for c in cs[:2]) else -1
@@ -261,11 +274,20 @@ def handle_new_proto(frame):
 
     if typ == "HELLO":
         # HELLO,proto,imei,fw,gps,gsm
-        return (f"HELLO  IMEI={f[2] if len(f) > 2 else '?'}  proto={f[1] if len(f) > 1 else '?'} "
+        imei = f[2] if len(f) > 2 else "?"
+        conn["imei"] = imei
+        state.on_hello(imei, conn["who"], f[1] if len(f) > 1 else None,
+                       f[3] if len(f) > 3 else None,
+                       f[4] if len(f) > 4 else None,
+                       f[5] if len(f) > 5 else None)
+        return (f"HELLO  IMEI={imei}  proto={f[1] if len(f) > 1 else '?'} "
                 f"fw={f[3] if len(f) > 3 else '?'} {'/'.join(f[4:])}"), nproto_reply("OK")
 
     if typ == "PING":
-        return f"PING  IMEI={f[1] if len(f) > 1 else '?'}  uptime={f[2] if len(f) > 2 else '?'}s", nproto_reply("OK")
+        imei = f[1] if len(f) > 1 else (conn.get("imei") or "?")
+        conn.setdefault("imei", imei)
+        state.on_ping(imei, conn["who"], f[2] if len(f) > 2 else None)
+        return f"PING  IMEI={imei}  uptime={f[2] if len(f) > 2 else '?'}s", nproto_reply("OK")
 
     if typ == "RAW":
         # RAW,<src>,<payload...>  — payload (ramka CAN) może zawierać przecinki
@@ -275,6 +297,7 @@ def handle_new_proto(frame):
         can = decode_can(*payload.split("!")[:2]) if "!" in payload else {}
         if can:
             info += "   " + " ".join(f"{k}={v}" for k, v in can.items())
+        state.on_can(conn.get("imei") or "?", conn["who"], can or None, payload)
         return info, nproto_reply("OK")
 
     if typ == "POS":
@@ -286,13 +309,18 @@ def handle_new_proto(frame):
             when = f"{utc[:2]}:{utc[2:4]}:{utc[4:]}" if len(utc) == 6 else utc
             info = (f"POS  {when} UTC  {lat:.6f}, {lon:.6f}  "
                     f"alt={f[4]}m sat={f[5]} v={f[6]} kurs={f[7]} {f[8]}")
-            craw = ""
+            pos = {"t": when, "lat": round(lat, 6), "lon": round(lon, 6),
+                   "alt": f[4], "sat": f[5], "spd": f[6], "course": f[7],
+                   "flag": f[8] if len(f) > 8 else "", "can": None, "can_raw": ""}
             if "CAN:" in core:
                 craw = core.split("CAN:", 1)[1]
                 info += f"   CAN[{craw}]"
                 can = decode_can(*craw.split("!")[:2]) if "!" in craw else {}
+                pos["can"] = can or None
+                pos["can_raw"] = craw
                 if can:
                     info += "  " + " ".join(f"{k}={v}" for k, v in can.items())
+            state.on_pos(conn.get("imei") or "?", conn["who"], pos)
         except (ValueError, IndexError) as e:
             info = f"POS nieczytelny ({e!r}): {frame}"
         return info, nproto_reply("OK")
@@ -300,25 +328,29 @@ def handle_new_proto(frame):
     return f"#? nieznany typ: {frame}", nproto_reply("OK")
 
 
-def handle_frame(frame, args):
+def handle_frame(frame, args, state, conn):
     """Zwraca (opis do logu, odpowiedź do wysłania)."""
     if frame.startswith("FWREQ"):
         # Bootloader prosi o obraz: odsyłamy "FW <rozmiar> <crc32>\n" + bajty.
-        if not getattr(args, "fw", None):
-            return "FWREQ — brak --fw, odmawiam", "FWERR\n"
+        if not state.ota_armed or not state.ota_fw:
+            return "FWREQ — OTA nieuzbrojone / brak obrazu, odmawiam", "FWERR\n"
         try:
-            with open(args.fw, "rb") as f:
+            with open(state.ota_fw, "rb") as f:
                 data = f.read()
         except OSError as e:
-            return f"FWREQ — nie mogę otworzyć {args.fw}: {e}", "FWERR\n"
+            return f"FWREQ — nie mogę otworzyć {state.ota_fw}: {e}", "FWERR\n"
         import zlib
         crc = zlib.crc32(data) & 0xFFFFFFFF
         header = f"FW {len(data)} {crc:08x}\n"
         reply = header + data.decode("latin-1")     # bajty 1:1 w latin-1
+        state.ota_last = {"t": now_iso(), "size": len(data), "crc": f"{crc:08x}",
+                          "who": conn.get("who"), "imei": conn.get("imei"),
+                          "fw": state.ota_fw}
+        state.publish("ota", state.ota_status())
         return f"FWREQ -> wysyłam {len(data)} B, crc={crc:08x}", reply
 
     if frame.startswith("#"):
-        return handle_new_proto(frame)
+        return handle_new_proto(frame, state, conn)
 
     if frame.startswith("HSK-02;"):
         p = frame.split(";")
@@ -349,10 +381,22 @@ def handle_frame(frame, args):
     if frame.startswith(("LOK-02;", "LOO-02;")):
         kind = frame[:6]                       # LOK = bieżące, LOO = zaległe z pamięci
         head, _, rest = frame.partition("$")
+        imei = head[7:]
+        conn.setdefault("imei", imei)
         records = [r for r in rest.split("$") if r]
-        lines = [f"{kind}  IMEI={head[7:]}  rekordów={len(records)}"]
+        lines = [f"{kind}  IMEI={imei}  rekordów={len(records)}"]
         for i, r in enumerate(records):
             lines.append(f"    rekord {i + 1}: -> {describe_record(r)}")
+            d = decode_record(r)
+            if "lat_deg" in d:
+                t, dt = d.get("utc", ""), d.get("date", "")
+                when = (f"{t[:2]}:{t[2:4]}:{t[4:]}" if len(t) == 6 else t)
+                can = {k: d[k] for k in ("can_speed", "pedal", "odo", "f_a", "f_b", "stat") if k in d}
+                state.on_pos(imei, conn["who"], {
+                    "t": when, "lat": d["lat_deg"], "lon": d["lon_deg"],
+                    "alt": d.get("alt_m", ""), "sat": d.get("sats", ""),
+                    "spd": d.get("speed", ""), "course": "", "flag": "",
+                    "can": can or None, "can_raw": (d.get("can1", "") + "!" + d.get("can2", "")) if d.get("can1") else ""})
             if VERBOSITY >= 3:                  # -vv: surowy rekord i rozbicie pól
                 d = decode_record(r)
                 lines.append(f"        raw   = {r}")
@@ -387,7 +431,7 @@ def handle_frame(frame, args):
     return f"NIEZNANA ramka: {frame}", "{OK}"
 
 
-async def answer(frame_raw, who, writer, args):
+async def answer(frame_raw, who, writer, args, state, conn):
     """Obsłuż jedną kompletną ramkę (zakończoną '\\n') i odeślij odpowiedź."""
     log(f"[{who}] {RX}ramka: {frame_raw!r}", DIM, level=2)
     frame = frame_raw.decode("latin-1").strip("\r\n\x00\x1a ")
@@ -395,11 +439,12 @@ async def answer(frame_raw, who, writer, args):
         log(f"[{who}] {RX}pusta linia — pomijam", YELLOW, level=2)
         return
     try:
-        info, reply = handle_frame(frame, args)
+        info, reply = handle_frame(frame, args, state, conn)
     except Exception as e:                  # błąd jednej ramki nie zabija serwera
         log(f"[{who}] {RX}błąd obsługi ramki: {e!r}", BOLD, RED, level=0)
         info, reply = f"BŁĄD: {frame}", "{OK}"
     log(f"[{who}] {RX}{safe(info)}", BOLD, FRAME_COLORS.get(info.split()[0]), level=0)
+    state.note_raw(who, "<=", safe(info), conn.get("imei"))
 
     # OTA: nagłówek osobno, potem firmware w kawałkach RÓWNYCH stronie flasha
     # (256 B) z przerwą na SPM. Bootloader zapisuje stronę (SPM ~9 ms blokuje
@@ -424,9 +469,10 @@ async def answer(frame_raw, who, writer, args):
     log(f"[{who}] {TX}odpowiedź: {reply}", BOLD, GREEN, level=1)
 
 
-async def client(reader, writer, args):
+async def client(reader, writer, args, state):
     peer = writer.get_extra_info("peername")
     who = f"{peer[0]}:{peer[1]}" if peer else "?"
+    conn = {"who": who, "imei": None}
     log(f"{NN}Połączenie od {who}", BOLD, CYAN, level=0)
     loop = asyncio.get_running_loop()
     buf = b""                               # dane jeszcze bez '\n'
@@ -460,7 +506,7 @@ async def client(reader, writer, args):
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 frames += 1
-                await answer(line + b"\n", who, writer, args)
+                await answer(line + b"\n", who, writer, args, state, conn)
             if len(buf) > 65536:
                 log(f"[{who}] {RX}ponad 64 KiB bez \\r\\n — odrzucam bufor: {buf[:200]!r}...", BOLD, RED, level=0)
                 buf = b""
@@ -468,12 +514,433 @@ async def client(reader, writer, args):
         log(f"[{who}] {NN}połączenie zerwane: {e!r}", RED, level=1)
     finally:
         writer.close()
+        state.on_disconnect(who)
         if buf:
             log(f"[{who}] {RX}niepełna ramka przed rozłączeniem: {buf!r}", BOLD, YELLOW, level=0)
         if total == 0:
             log(f"{NN}Rozłączono {who} — nie przyszedł ani jeden bajt", BOLD, YELLOW, level=0)
         else:
             log(f"{NN}Rozłączono {who} — odebrano {total} B, ramek: {frames}", CYAN, level=0)
+
+
+# ===========================================================================
+# Wspólny stan + interfejs WWW (stdlib, bez zależności — pod OpenWRT)
+# ===========================================================================
+class State:
+    """Pamięć podręczna widoku: urządzenia, ich ostatnia pozycja/CAN, trasa i
+    surowy log. Wszystko w RAM i OGRANICZONE (router ma mało pamięci)."""
+
+    def __init__(self, max_track=500, max_raw=300):
+        self.devices = {}                       # imei -> rekord urządzenia
+        self.raw = collections.deque(maxlen=max_raw)
+        self.subs = set()                       # kolejki SSE (po jednej na przeglądarkę)
+        self.max_track = max_track
+        self.ota_fw = None
+        self.ota_armed = False
+        self.ota_last = None
+        self.seq = 0
+
+    # --- urządzenia --------------------------------------------------------
+    def _dev(self, imei):
+        d = self.devices.get(imei)
+        if d is None:
+            d = {"imei": imei, "fw": None, "proto": None, "gps": None, "gsm": None,
+                 "first_seen": now_iso(), "last_seen": now_iso(), "peer": None,
+                 "online": True, "uptime": None, "pos": None, "can": None,
+                 "track": collections.deque(maxlen=self.max_track), "frames": 0}
+            self.devices[imei] = d
+        return d
+
+    def _pub_dev(self, d):
+        pd = {k: d[k] for k in ("imei", "fw", "proto", "gps", "gsm", "first_seen",
+                                "last_seen", "peer", "online", "uptime", "pos",
+                                "can", "frames")}
+        return pd
+
+    # --- publikacja do przeglądarek (SSE) ----------------------------------
+    def publish(self, kind, payload):
+        self.seq += 1
+        msg = json.dumps({"seq": self.seq, "kind": kind, "payload": payload},
+                         ensure_ascii=False)
+        for q in list(self.subs):
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass                            # wolny klient gubi aktualizacje
+
+    # --- zdarzenia z protokołu --------------------------------------------
+    def on_hello(self, imei, peer, proto, fw, gps, gsm):
+        d = self._dev(imei)
+        d.update(peer=peer, proto=proto, fw=fw, gps=gps, gsm=gsm,
+                 online=True, last_seen=now_iso())
+        d["frames"] += 1
+        self.publish("device", self._pub_dev(d))
+
+    def on_ping(self, imei, peer, uptime):
+        d = self._dev(imei)
+        d.update(peer=peer, uptime=uptime, online=True, last_seen=now_iso())
+        d["frames"] += 1
+        self.publish("device", self._pub_dev(d))
+
+    def on_pos(self, imei, peer, pos):
+        d = self._dev(imei)
+        d.update(peer=peer, online=True, last_seen=now_iso(), pos=pos)
+        d["frames"] += 1
+        if pos.get("lat") is not None:
+            d["track"].append([pos["lat"], pos["lon"], pos.get("t")])
+        if pos.get("can"):
+            d["can"] = pos["can"]
+        self.publish("pos", {"imei": imei, "pos": pos})
+
+    def on_can(self, imei, peer, can, raw):
+        d = self._dev(imei)
+        d.update(peer=peer, online=True, last_seen=now_iso())
+        d["frames"] += 1
+        if can:
+            d["can"] = can
+        self.publish("can", {"imei": imei, "can": can, "raw": raw})
+
+    def on_disconnect(self, who):
+        for d in self.devices.values():
+            if d.get("peer") == who and d.get("online"):
+                d["online"] = False
+                self.publish("device", self._pub_dev(d))
+
+    def note_raw(self, who, direction, text, imei=None):
+        item = {"t": now_iso(), "who": who, "dir": direction,
+                "imei": imei, "text": text}
+        self.raw.append(item)
+        self.publish("raw", item)
+
+    # --- migawki -----------------------------------------------------------
+    def ota_status(self):
+        return {"fw": self.ota_fw, "armed": self.ota_armed, "last": self.ota_last}
+
+    def snapshot(self):
+        devs = []
+        for d in self.devices.values():
+            pd = self._pub_dev(d)
+            pd["track"] = list(d["track"])
+            devs.append(pd)
+        return {"devices": devs, "raw": list(self.raw),
+                "ota": self.ota_status(), "seq": self.seq}
+
+
+def http_response(status="200 OK", ctype="text/html; charset=utf-8", body=b"",
+                  extra=""):
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    head = (f"HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n"
+            f"Cache-Control: no-store\r\n{extra}\r\n")
+    return head.encode("latin-1") + body
+
+
+async def read_http_request(reader):
+    """Minimalny parser HTTP/1.1 (bez zależności). Zwraca (method, path, headers, body)."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = await reader.read(2048)
+        if not chunk:
+            return None
+        data += chunk
+        if len(data) > 65536:                   # ochrona przed zalaniem pamięci
+            break
+    head, _, rest = data.partition(b"\r\n\r\n")
+    lines = head.decode("latin-1", "replace").split("\r\n")
+    parts = (lines[0].split(" ") + ["", "", ""])[:3]
+    method, path = parts[0], parts[1]
+    headers = {}
+    for ln in lines[1:]:
+        if ":" in ln:
+            k, v = ln.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+    body = rest
+    clen = int(headers.get("content-length", "0") or 0)
+    while len(body) < clen:
+        chunk = await reader.read(clen - len(body))
+        if not chunk:
+            break
+        body += chunk
+    return method, path, headers, body
+
+
+async def sse_stream(writer, state):
+    """Server-Sent Events: po jednej kolejce na przeglądarkę. Pierwsza wiadomość
+    to pełna migawka, potem przyrostowo. Keepalive co 15 s (komentarz SSE)."""
+    q = asyncio.Queue(maxsize=400)
+    state.subs.add(q)
+    try:
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                     b"Cache-Control: no-store\r\nConnection: keep-alive\r\n"
+                     b"Access-Control-Allow-Origin: *\r\n\r\n")
+        snap = json.dumps(state.snapshot(), ensure_ascii=False)
+        writer.write(f"event: snapshot\ndata: {snap}\n\n".encode("utf-8"))
+        await writer.drain()
+        while True:
+            try:
+                msg = await asyncio.wait_for(q.get(), 15)
+                writer.write(f"data: {msg}\n\n".encode("utf-8"))
+            except asyncio.TimeoutError:
+                writer.write(b": keepalive\n\n")
+            await writer.drain()
+    except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+        pass
+    finally:
+        state.subs.discard(q)
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+async def http_client(reader, writer, state, args):
+    try:
+        req = await read_http_request(reader)
+        if not req:
+            writer.close()
+            return
+        method, path, headers, body = req
+        qpath = path.split("?", 1)[0]
+
+        if method == "GET" and qpath in ("/", "/index.html"):
+            writer.write(http_response(body=INDEX_HTML))
+        elif method == "GET" and qpath == "/api/state":
+            writer.write(http_response(ctype="application/json",
+                         body=json.dumps(state.snapshot(), ensure_ascii=False)))
+        elif method == "GET" and qpath == "/api/events":
+            await sse_stream(writer, state)
+            return
+        elif qpath == "/api/ota":
+            if method == "POST":
+                try:
+                    j = json.loads(body.decode("utf-8") or "{}")
+                except ValueError:
+                    j = {}
+                if "armed" in j:
+                    state.ota_armed = bool(j["armed"])
+                if j.get("fw"):
+                    state.ota_fw = str(j["fw"])
+                state.publish("ota", state.ota_status())
+                log(f"{NN}WWW: OTA armed={state.ota_armed} fw={state.ota_fw}", BOLD, YELLOW, level=0)
+            writer.write(http_response(ctype="application/json",
+                         body=json.dumps(state.ota_status(), ensure_ascii=False)))
+        else:
+            writer.write(http_response("404 Not Found", "text/plain; charset=utf-8",
+                                       "nie znaleziono"))
+        await writer.drain()
+    except (ConnectionResetError, BrokenPipeError):
+        pass
+    except Exception as e:                      # błąd jednego żądania nie kładzie serwera
+        log(f"{NN}WWW błąd: {e!r}", RED, level=1)
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+# Strona WWW — pojedynczy plik, bez buildu. Leaflet z CDN (przeglądarka musi mieć
+# internet do kafelków mapy); bez sieci i tak działa lista, CAN i surowy log.
+INDEX_HTML = r"""<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lokalizator — podgląd</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2b3440;
+    --fg:#e6edf3; --dim:#8b98a5; --accent:#2f81f7; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+  #app{display:grid;grid-template-columns:320px 1fr;grid-template-rows:auto 1fr 180px;height:100%}
+  header{grid-column:1/3;display:flex;align-items:center;gap:14px;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:15px;margin:0;font-weight:600}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--bad);display:inline-block;margin-right:6px}
+  .dot.on{background:var(--ok)}
+  #side{grid-row:2/4;background:var(--panel);border-right:1px solid var(--line);overflow:auto}
+  #map{grid-row:2/3}
+  #raw{grid-row:3/4;background:#0a0d12;border-top:1px solid var(--line);overflow:auto;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace;padding:6px 10px}
+  .dev{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+  .dev:hover{background:var(--panel2)}
+  .dev.sel{background:var(--panel2);box-shadow:inset 3px 0 0 var(--accent)}
+  .dev .imei{font-weight:600}
+  .dev .meta{color:var(--dim);font-size:12px;margin-top:2px}
+  .badge{font-size:11px;padding:1px 6px;border-radius:10px;background:#30363d;color:var(--dim)}
+  .badge.on{background:rgba(63,185,80,.15);color:var(--ok)}
+  .badge.off{background:rgba(248,81,73,.15);color:var(--bad)}
+  .sect{padding:10px 12px;border-bottom:1px solid var(--line)}
+  .sect h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:0 0 8px}
+  table.kv{width:100%;border-collapse:collapse}
+  table.kv td{padding:2px 0;vertical-align:top}
+  table.kv td.k{color:var(--dim);width:92px;white-space:nowrap}
+  table.kv td.v{font-family:ui-monospace,monospace}
+  .can td.v{color:var(--warn)}
+  button{font:inherit;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer}
+  button.ghost{background:#30363d}
+  button:disabled{opacity:.5;cursor:default}
+  .line{margin:1px 0;white-space:pre-wrap;word-break:break-all}
+  .line .tt{color:var(--dim)} .line .rx{color:var(--ok)} .line .imei{color:var(--accent)}
+  a{color:var(--accent)}
+  .ota small{color:var(--dim)}
+  @media(max-width:720px){#app{grid-template-columns:1fr;grid-template-rows:auto 220px 1fr 150px}#side{grid-row:2/3}#map{grid-row:3/4}#raw{grid-row:4/5}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Lokalizator — podgląd na żywo</h1>
+    <span><span id="dot" class="dot"></span><span id="status">łączenie…</span></span>
+    <span class="badge" id="devcount">0 urządzeń</span>
+    <span style="flex:1"></span>
+    <span class="ota" id="ota"></span>
+  </header>
+  <div id="side"></div>
+  <div id="map"></div>
+  <div id="raw"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const CAN_LABELS = {can_speed:"prędkość CAN [km/h]", pedal:"pedał gazu", odo:"przebieg [m]",
+                    f_a:"pole ?A", f_b:"pole ?B (nie paliwo)", stat:"status", _k:"stała"};
+const devices = {};
+let selected = null, map = null, layers = {};
+
+function el(html){const t=document.createElement("template");t.innerHTML=html.trim();return t.content.firstChild;}
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+function initMap(){
+  if(typeof L === "undefined"){document.getElementById("map").innerHTML =
+    '<div style="padding:16px;color:var(--dim)">Mapa niedostępna (brak internetu do kafelków). Lista i CAN działają.</div>';return;}
+  map = L.map("map",{zoomControl:true}).setView([52.0,19.0],6);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    {maxZoom:19, attribution:"© OpenStreetMap"}).addTo(map);
+}
+
+function devLayer(imei){
+  if(!map) return null;
+  if(!layers[imei]) layers[imei] = {track:L.polyline([],{color:"#2f81f7",weight:4,opacity:.85}).addTo(map),
+                                    marker:L.circleMarker([0,0],{radius:7,color:"#fff",weight:2,fillColor:"#2f81f7",fillOpacity:1})};
+  return layers[imei];
+}
+
+function renderSide(){
+  const side = document.getElementById("side");
+  const list = Object.values(devices).sort((a,b)=>(b.last_seen||"").localeCompare(a.last_seen||""));
+  document.getElementById("devcount").textContent = list.length + " urządzeń";
+  let h = "";
+  for(const d of list){
+    const on = d.online ? '<span class="badge on">online</span>' : '<span class="badge off">offline</span>';
+    const v = d.pos ? ("v="+esc(d.pos.spd)) : "";
+    h += `<div class="dev ${d.imei===selected?'sel':''}" data-imei="${esc(d.imei)}">
+      <div class="imei">${esc(d.imei)} ${on}</div>
+      <div class="meta">fw ${esc(d.fw||"?")} · ${esc(d.last_seen||"")} ${v}</div></div>`;
+  }
+  // panel szczegółów wybranego
+  const d = devices[selected];
+  if(d){
+    const p = d.pos || {};
+    h += `<div class="sect"><h2>Wybrane: ${esc(d.imei)}</h2><table class="kv">
+      <tr><td class="k">online</td><td class="v">${d.online?"tak":"nie"}</td></tr>
+      <tr><td class="k">peer</td><td class="v">${esc(d.peer||"?")}</td></tr>
+      <tr><td class="k">proto/fw</td><td class="v">${esc(d.proto||"?")} / ${esc(d.fw||"?")}</td></tr>
+      <tr><td class="k">GPS/GSM</td><td class="v">${esc(d.gps||"?")} / ${esc(d.gsm||"?")}</td></tr>
+      <tr><td class="k">uptime</td><td class="v">${esc(d.uptime||"?")} s</td></tr>
+      <tr><td class="k">ramek</td><td class="v">${esc(d.frames||0)}</td></tr>
+      <tr><td class="k">pozycja</td><td class="v">${p.lat!=null?p.lat.toFixed(6)+", "+p.lon.toFixed(6):"—"}</td></tr>
+      <tr><td class="k">czas/sat</td><td class="v">${esc(p.t||"?")} / sat ${esc(p.sat||"?")}</td></tr>
+      ${p.lat!=null?`<tr><td class="k">mapa</td><td class="v"><a href="https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=16/${p.lat}/${p.lon}" target="_blank">OSM</a></td></tr>`:""}
+      </table></div>`;
+    const can = d.can || {};
+    if(Object.keys(can).length){
+      let cr = "";
+      for(const k in can) cr += `<tr><td class="k">${esc(CAN_LABELS[k]||k)}</td><td class="v">${esc(can[k])}</td></tr>`;
+      h += `<div class="sect"><h2>CAN</h2><table class="kv can">${cr}</table></div>`;
+    }
+  }
+  side.innerHTML = h;
+  side.querySelectorAll(".dev").forEach(e=>e.onclick=()=>{selected=e.dataset.imei;focusDev();renderSide();});
+}
+
+function focusDev(){
+  const d = devices[selected]; if(!d||!map) return;
+  const L2 = devLayer(selected);
+  const pts = (d.track||[]).filter(t=>t[0]!=null).map(t=>[t[0],t[1]]);
+  if(L2){ L2.track.setLatLngs(pts);
+    if(d.pos&&d.pos.lat!=null){L2.marker.setLatLng([d.pos.lat,d.pos.lon]).addTo(map);}
+    if(pts.length) map.fitBounds(L2.track.getBounds().pad(0.2)); }
+}
+
+function updateTrack(imei){
+  const d=devices[imei]; if(!d||!map) return;
+  const L2=devLayer(imei); if(!L2) return;
+  const pts=(d.track||[]).filter(t=>t[0]!=null).map(t=>[t[0],t[1]]);
+  L2.track.setLatLngs(pts);
+  if(d.pos&&d.pos.lat!=null) L2.marker.setLatLng([d.pos.lat,d.pos.lon]).addTo(map);
+  if(imei===selected && pts.length) map.panTo([d.pos.lat,d.pos.lon]);
+}
+
+function addRaw(it){
+  const box=document.getElementById("raw");
+  const near=box.scrollTop+box.clientHeight>=box.scrollHeight-20;
+  box.appendChild(el(`<div class="line"><span class="tt">${esc(it.t)}</span> <span class="rx">${esc(it.dir)}</span> ${it.imei?`<span class="imei">[${esc(it.imei)}]</span> `:""}${esc(it.text)}</div>`));
+  while(box.childElementCount>400) box.removeChild(box.firstChild);
+  if(near) box.scrollTop=box.scrollHeight;
+}
+
+function renderOta(o){
+  const box=document.getElementById("ota"); if(!o) return;
+  const armed=o.armed;
+  const last=o.last?` · ostatni: ${esc(o.last.t)} ${esc(o.last.size)}B`:"";
+  box.innerHTML=`OTA: <b style="color:${armed?'var(--ok)':'var(--dim)'}">${armed?'UZBROJONE':'wyłączone'}</b>
+    <button class="ghost" id="otabtn">${armed?'rozbrój':'uzbrój'}</button> <small>${esc(o.fw||'brak obrazu')}${last}</small>`;
+  document.getElementById("otabtn").onclick=()=>{
+    fetch("/api/ota",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({armed:!armed})}).then(r=>r.json()).then(renderOta);
+  };
+}
+
+function applySnapshot(s){
+  for(const k in devices) delete devices[k];
+  for(const d of s.devices){ d.track=d.track||[]; devices[d.imei]=d; }
+  if(!selected && s.devices.length) selected=s.devices[0].imei;
+  renderSide(); renderOta(s.ota);
+  for(const im in devices) updateTrack(im);
+  focusDev();
+  const box=document.getElementById("raw"); box.innerHTML="";
+  (s.raw||[]).forEach(addRaw);
+}
+
+function applyUpdate(m){
+  const p=m.payload;
+  if(m.kind==="device"){ devices[p.imei]=Object.assign(devices[p.imei]||{track:[]},p);
+    if(!selected) selected=p.imei; renderSide(); }
+  else if(m.kind==="pos"){ const d=devices[p.imei]||(devices[p.imei]={imei:p.imei,track:[]});
+    d.pos=p.pos; if(p.pos.can) d.can=p.pos.can; d.last_seen=p.pos.t;
+    if(p.pos.lat!=null){ d.track.push([p.pos.lat,p.pos.lon,p.pos.t]); if(d.track.length>500)d.track.shift(); }
+    updateTrack(p.imei); renderSide(); }
+  else if(m.kind==="can"){ const d=devices[p.imei]; if(d){ if(p.can)d.can=p.can; renderSide(); } }
+  else if(m.kind==="raw"){ addRaw(p); }
+  else if(m.kind==="ota"){ renderOta(p); }
+}
+
+function connect(){
+  const es=new EventSource("/api/events");
+  es.addEventListener("snapshot",e=>applySnapshot(JSON.parse(e.data)));
+  es.onmessage=e=>applyUpdate(JSON.parse(e.data));
+  es.onopen=()=>{document.getElementById("dot").classList.add("on");document.getElementById("status").textContent="połączono";};
+  es.onerror=()=>{document.getElementById("dot").classList.remove("on");document.getElementById("status").textContent="rozłączono — ponawiam…";};
+}
+initMap(); connect();
+</script>
+</body>
+</html>
+"""
 
 
 async def main():
@@ -499,6 +966,14 @@ async def main():
     ap.add_argument("--fw", default=None,
                     help="plik obrazu firmware serwowany bootloaderowi na 'FWREQ' "
                          "(np. ../build/tracker.bin) — zdalna aktualizacja OTA")
+    ap.add_argument("--web-port", type=int, default=8080,
+                    help="port interfejsu WWW (0 = wyłącz)")
+    ap.add_argument("--web-listen", default="0.0.0.0",
+                    help="adres nasłuchu WWW (na routerze ogranicz do LAN!)")
+    ap.add_argument("--max-track", type=int, default=500,
+                    help="ile ostatnich punktów trasy trzymać na urządzenie (RAM)")
+    ap.add_argument("--max-raw", type=int, default=300,
+                    help="ile ostatnich linii surowego logu trzymać (RAM)")
     ap.add_argument("--no-color", action="store_true", help="bez kolorów w terminalu")
     ap.add_argument("-v", "--verbose", action="count", default=0,
                     help="więcej szczegółów: -v surowe bajty, -vv rozbicie pól")
@@ -519,13 +994,31 @@ async def main():
         os.system("")                       # włącza kody ANSI w konsoli Windows
 
     hsk_reply(args.device_host, args.device_port)       # walidacja argumentów
-    server = await asyncio.start_server(lambda r, w: client(r, w, args),
+
+    state = State(max_track=args.max_track, max_raw=args.max_raw)
+    state.ota_fw = args.fw
+    state.ota_armed = bool(args.fw)                     # z --fw startuje uzbrojone
+
+    server = await asyncio.start_server(lambda r, w: client(r, w, args, state),
                                         args.listen, args.port)
     log(f"Nasłuch na {args.listen}:{args.port}  (HSK odsyła {args.device_host}:{args.device_port})", BOLD, GREEN, level=0)
+
+    web = None
+    if args.web_port:
+        web = await asyncio.start_server(lambda r, w: http_client(r, w, state, args),
+                                         args.web_listen, args.web_port)
+        log(f"WWW na http://{args.web_listen}:{args.web_port}  (mapa + log na żywo)", BOLD, GREEN, level=0)
+        if args.web_listen in ("0.0.0.0", "::"):
+            log("  UWAGA: WWW słucha na wszystkich interfejsach — na routerze ogranicz w firewallu do LAN.", YELLOW, level=0)
     if LOG_FILE:
         log(f"Log: {LOG_FILE}", DIM, level=0)
-    async with server:
-        await server.serve_forever()
+
+    servers = [server] + ([web] if web else [])
+    try:
+        await asyncio.gather(*(s.serve_forever() for s in servers))
+    finally:
+        for s in servers:
+            s.close()
 
 
 if __name__ == "__main__":
